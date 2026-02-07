@@ -1,0 +1,40 @@
+{
+  "id": "memu-engine",
+  "name": "memU Agentic Engine",
+  "description": "memU agentic memory layer (SQLModel + SiliconFlow)",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "embedding": {
+        "type": "object",
+        "properties": {
+          "provider": { "type": "string", "default": "siliconflow" },
+          "apiKey": { "type": "string" },
+          "baseUrl": { "type": "string", "default": "https://api.siliconflow.cn/v1" },
+          "model": { "type": "string", "default": "BAAI/bge-m3" }
+        },
+        "required": ["apiKey"]
+      },
+      "ingest": {
+        "type": "object",
+        "properties": {
+          "timeoutSeconds": { "type": "number", "default": 600 }
+        }
+      }
+    },
+    "required": ["embedding"]
+  },
+  "uiHints": {
+    "embedding.apiKey": {
+      "label": "Embedding API Key",
+      "sensitive": true,
+      "help": "API Key for the embedding provider (e.g. SiliconFlow)"
+    },
+    "embedding.model": {
+      "label": "Embedding Model",
+      "placeholder": "BAAI/bge-m3"
+    }
+  }
+}
