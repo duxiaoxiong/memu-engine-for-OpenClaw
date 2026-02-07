@@ -128,7 +128,7 @@ const memuEnginePlugin = {
 
     const searchSchema = {
       type: "object",
-      additionalProperties: false,
+      additionalProperties: true,
       properties: { query: { type: "string" }, maxResults: { type: "number" }, minScore: { type: "number" } },
       required: ["query"]
     };
@@ -153,7 +153,7 @@ const memuEnginePlugin = {
 
     const getSchema = {
       type: "object",
-      additionalProperties: false,
+      additionalProperties: true,
       properties: { path: { type: "string", description: "Path to the memory file or memU resource URL." } },
       required: ["path"]
     };
