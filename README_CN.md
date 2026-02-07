@@ -39,7 +39,7 @@
 ```bash
 mkdir -p ~/src
 cd ~/src
-git clone https://github.com/<you>/<repo>.git memu-engine
+git clone https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git memu-engine
 ```
 
 2) 复制到 OpenClaw 扩展目录

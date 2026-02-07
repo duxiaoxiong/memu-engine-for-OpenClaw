@@ -44,6 +44,7 @@ Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaox
 mkdir -p ~/src
 cd ~/src
 git clone https://github.com/<you>/<repo>.git memu-engine
+git clone https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git memu-engine
 ```
 
 2) Copy into the OpenClaw extensions directory
