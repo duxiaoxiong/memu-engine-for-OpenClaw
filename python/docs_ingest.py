@@ -9,20 +9,23 @@ from memu.app.settings import (
     MetadataStoreConfig,
 )
 
+
 def _env(name: str, default: str | None = None) -> str | None:
     v = os.getenv(name)
     if v is not None and str(v).strip():
         return v
     return default
 
+
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
     if not data_dir:
         base = os.path.dirname(os.path.abspath(__file__))
         data_dir = os.path.join(base, "data")
-    
+
     os.makedirs(data_dir, exist_ok=True)
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
+
 
 def get_extra_paths() -> list[str]:
     raw = os.getenv("MEMU_EXTRA_PATHS", "[]")
@@ -34,19 +37,30 @@ def get_extra_paths() -> list[str]:
         pass
     return []
 
+
 async def main():
+    user_id = _env("MEMU_USER_ID", "default") or "default"
+
     chat_kwargs = {}
-    if p := _env("MEMU_CHAT_PROVIDER"): chat_kwargs["provider"] = p
-    if u := _env("MEMU_CHAT_BASE_URL"): chat_kwargs["base_url"] = u
-    if k := _env("MEMU_CHAT_API_KEY"): chat_kwargs["api_key"] = k
-    if m := _env("MEMU_CHAT_MODEL"): chat_kwargs["chat_model"] = m
+    if p := _env("MEMU_CHAT_PROVIDER"):
+        chat_kwargs["provider"] = p
+    if u := _env("MEMU_CHAT_BASE_URL"):
+        chat_kwargs["base_url"] = u
+    if k := _env("MEMU_CHAT_API_KEY"):
+        chat_kwargs["api_key"] = k
+    if m := _env("MEMU_CHAT_MODEL"):
+        chat_kwargs["chat_model"] = m
     chat_config = LLMConfig(**chat_kwargs)
 
     embed_kwargs = {}
-    if p := _env("MEMU_EMBED_PROVIDER"): embed_kwargs["provider"] = p
-    if u := _env("MEMU_EMBED_BASE_URL"): embed_kwargs["base_url"] = u
-    if k := _env("MEMU_EMBED_API_KEY"): embed_kwargs["api_key"] = k
-    if m := _env("MEMU_EMBED_MODEL"): embed_kwargs["embed_model"] = m
+    if p := _env("MEMU_EMBED_PROVIDER"):
+        embed_kwargs["provider"] = p
+    if u := _env("MEMU_EMBED_BASE_URL"):
+        embed_kwargs["base_url"] = u
+    if k := _env("MEMU_EMBED_API_KEY"):
+        embed_kwargs["api_key"] = k
+    if m := _env("MEMU_EMBED_MODEL"):
+        embed_kwargs["embed_model"] = m
     embed_config = LLMConfig(**embed_kwargs)
 
     db_config = DatabaseConfig(
@@ -86,8 +100,11 @@ async def main():
         print("[memU docs_ingest] No markdown files found in extraPaths.", flush=True)
         return
 
-    print(f"[memU docs_ingest] Starting ingest of {len(files_to_ingest)} files...", flush=True)
-    
+    print(
+        f"[memU docs_ingest] Starting ingest of {len(files_to_ingest)} files...",
+        flush=True,
+    )
+
     timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
 
     ok = 0
@@ -100,9 +117,9 @@ async def main():
                 service.memorize(
                     resource_url=file_path,
                     modality="document",
-                    user={"user_id": "xiaoxiong"},
+                    user={"user_id": user_id},
                 ),
-                timeout=timeout_s
+                timeout=timeout_s,
             )
             ok += 1
         except Exception as e:

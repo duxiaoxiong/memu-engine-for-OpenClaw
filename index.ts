@@ -10,6 +10,38 @@ const memuEnginePlugin = {
   register(api: OpenClawPluginApi) {
     const pythonRoot = path.join(__dirname, "python");
 
+    const computeExtraPaths = (pluginConfig: any, workspaceDir: string): string[] => {
+      const ingestConfig = pluginConfig?.ingest || {};
+      const includeDefaultPaths = ingestConfig.includeDefaultPaths !== false;
+
+      const defaultPaths = [
+        path.join(workspaceDir, "AGENTS.md"),
+        path.join(workspaceDir, "SOUL.md"),
+        path.join(workspaceDir, "TOOLS.md"),
+        path.join(workspaceDir, "MEMORY.md"),
+        path.join(workspaceDir, "HEARTBEAT.md"),
+        path.join(workspaceDir, "BOOTSTRAP.md"),
+        // OpenClaw canonical durable memory folder
+        path.join(workspaceDir, "memory"),
+      ];
+
+      const extraPaths = Array.isArray(ingestConfig.extraPaths)
+        ? ingestConfig.extraPaths.filter((p: unknown): p is string => typeof p === "string")
+        : [];
+
+      const combined = includeDefaultPaths ? [...defaultPaths, ...extraPaths] : extraPaths;
+      // Dedupe while keeping order
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const p of combined) {
+        const key = p.trim();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        out.push(key);
+      }
+      return out;
+    };
+
     const getPluginConfig = (toolCtx?: { config?: any }) => {
       // Prefer plugin-scoped config (what users edit under plugins.entries["memu-engine"].config)
       if (api.pluginConfig && typeof api.pluginConfig === "object") {
@@ -36,16 +68,26 @@ const memuEnginePlugin = {
       if (syncProcess) return; // Already running
 
       const embeddingConfig = pluginConfig.embedding || {};
+      const extractionConfig = pluginConfig.extraction || {};
       const ingestConfig = pluginConfig.ingest || {};
+
+      const extraPaths = computeExtraPaths(pluginConfig, workspaceDir);
       
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
+        MEMU_EMBED_PROVIDER: embeddingConfig.provider || "openai",
         MEMU_EMBED_API_KEY: embeddingConfig.apiKey || process.env.MEMU_EMBED_API_KEY || "",
         MEMU_EMBED_BASE_URL: embeddingConfig.baseUrl || "https://api.openai.com/v1",
         MEMU_EMBED_MODEL: embeddingConfig.model || "text-embedding-3-small",
+
+        MEMU_CHAT_PROVIDER: extractionConfig.provider || "openai",
+        MEMU_CHAT_API_KEY: extractionConfig.apiKey || process.env.MEMU_CHAT_API_KEY || "",
+        MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "https://api.openai.com/v1",
+        MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
+
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
-        MEMU_EXTRA_PATHS: JSON.stringify(ingestConfig.extraPaths || []),
+        MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         // Auto-infer session dir: usually at workspace sibling agents/main/sessions
         // Assuming standard directory structure here
         OPENCLAW_SESSIONS_DIR: path.join(process.env.HOME || "", ".openclaw/agents/main/sessions")
@@ -112,8 +154,8 @@ const memuEnginePlugin = {
         
         MEMU_CHAT_PROVIDER: extractionConfig.provider || "openai",
         MEMU_CHAT_API_KEY: extractionConfig.apiKey || "",
-        MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "",
-        MEMU_CHAT_MODEL: extractionConfig.model || "",
+        MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "https://api.openai.com/v1",
+        MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
 
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
       };
@@ -139,9 +181,7 @@ const memuEnginePlugin = {
     const searchSchema = {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query" },
-        maxResults: { type: "number", description: "Max results (optional)" },
-        minScore: { type: "number", description: "Min score (optional)" }
+        query: { type: "string", description: "Search query" }
       },
       required: ["query"]
     };

@@ -4,10 +4,10 @@ import hashlib
 import json
 import uuid
 from datetime import datetime
-from typing import Any, Literal, List
+from typing import Any, Literal, cast
 
 import pendulum
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 MemoryType = Literal["profile", "event", "knowledge", "behavior", "skill", "tool"]
 
@@ -46,16 +46,28 @@ class ToolCallResult(BaseModel):
     tool_name: str = Field(..., description="Name of the tool that was called")
     input: dict[str, Any] | str = Field(default="", description="Tool input parameters")
     output: str = Field(default="", description="Tool output result")
-    success: bool = Field(default=True, description="Whether the tool invocation succeeded")
-    time_cost: float = Field(default=0.0, description="Time consumed by the tool invocation in seconds")
-    token_cost: int = Field(default=-1, description="Token consumption of the tool (-1 if unknown)")
+    success: bool = Field(
+        default=True, description="Whether the tool invocation succeeded"
+    )
+    time_cost: float = Field(
+        default=0.0, description="Time consumed by the tool invocation in seconds"
+    )
+    token_cost: int = Field(
+        default=-1, description="Token consumption of the tool (-1 if unknown)"
+    )
     score: float = Field(default=0.0, description="Quality score from 0.0 to 1.0")
-    call_hash: str = Field(default="", description="Hash of input+output for deduplication")
+    call_hash: str = Field(
+        default="", description="Hash of input+output for deduplication"
+    )
     created_at: datetime = Field(default_factory=lambda: pendulum.now("UTC"))
 
     def generate_hash(self) -> str:
         """Generate MD5 hash from tool input and output for deduplication."""
-        input_str = json.dumps(self.input, sort_keys=True) if isinstance(self.input, dict) else str(self.input)
+        input_str = (
+            json.dumps(self.input, sort_keys=True)
+            if isinstance(self.input, dict)
+            else str(self.input)
+        )
         combined = f"{self.tool_name}|{input_str}|{self.output}"
         return hashlib.md5(combined.encode("utf-8"), usedforsecurity=False).hexdigest()
 
@@ -70,16 +82,14 @@ class Resource(BaseRecord):
     modality: str
     local_path: str
     caption: str | None = None
-    # Vector embedding (kept out of most dumps; SQLite stores it in embedding_json)
-    embedding: list[float] | None = Field(default=None, exclude=True)
+    embedding: list[float] | None = None
 
 
 class MemoryItem(BaseRecord):
     resource_id: str | None
     memory_type: str
     summary: str
-    # Vector embedding (kept out of most dumps; SQLite stores it in embedding_json)
-    embedding: list[float] | None = Field(default=None, exclude=True)
+    embedding: list[float] | None = None
     happened_at: datetime | None = None
     extra: dict[str, Any] = {}
     # extra may contain:
@@ -98,8 +108,7 @@ class MemoryItem(BaseRecord):
 class MemoryCategory(BaseRecord):
     name: str
     description: str
-    # Vector embedding (kept out of most dumps; SQLite stores it in embedding_json)
-    embedding: list[float] | None = Field(default=None, exclude=True)
+    embedding: list[float] | None = None
     summary: str | None = None
 
 
@@ -108,20 +117,34 @@ class CategoryItem(BaseRecord):
     category_id: str
 
 
-def merge_scope_model[TBaseRecord: BaseRecord](
-    user_model: type[BaseModel], core_model: type[TBaseRecord], *, name_suffix: str
-) -> type[TBaseRecord]:
+def merge_scope_model(
+    user_model: type[BaseModel], core_model: type[BaseModel], *, name_suffix: str
+) -> type[BaseModel]:
     """Create a scoped model inheriting both the user scope model and the core model."""
     overlap = set(user_model.model_fields) & set(core_model.model_fields)
     if overlap:
         msg = f"Scope fields conflict with core model fields: {sorted(overlap)}"
         raise TypeError(msg)
 
-    return type(
+    # Avoid multiple-inheritance between two Pydantic models.
+    # It can trigger MRO inconsistencies and confuses static checkers.
+    fields: dict[str, tuple[Any, Any]] = {}
+    for name, info in user_model.model_fields.items():
+        ann = info.annotation or Any
+        if info.default_factory is not None:
+            fields[name] = (ann, Field(default_factory=info.default_factory))
+        elif info.is_required():
+            fields[name] = (ann, ...)
+        else:
+            fields[name] = (ann, info.default)
+
+    scoped = create_model(
         f"{user_model.__name__}{core_model.__name__}{name_suffix}",
-        (user_model, core_model),
-        {"model_config": ConfigDict(extra="allow")},
+        __base__=core_model,
+        __config__=ConfigDict(extra="allow"),
+        **fields,
     )
+    return scoped
 
 
 def build_scoped_models(
@@ -130,10 +153,21 @@ def build_scoped_models(
     """
     Build scoped interface models (Pydantic) that inherit from the base record models and user scope.
     """
-    resource_model = merge_scope_model(user_model, Resource, name_suffix="Resource")
-    memory_category_model = merge_scope_model(user_model, MemoryCategory, name_suffix="MemoryCategory")
-    memory_item_model = merge_scope_model(user_model, MemoryItem, name_suffix="MemoryItem")
-    category_item_model = merge_scope_model(user_model, CategoryItem, name_suffix="CategoryItem")
+    resource_model = cast(
+        type[Resource], merge_scope_model(user_model, Resource, name_suffix="Resource")
+    )
+    memory_category_model = cast(
+        type[MemoryCategory],
+        merge_scope_model(user_model, MemoryCategory, name_suffix="MemoryCategory"),
+    )
+    memory_item_model = cast(
+        type[MemoryItem],
+        merge_scope_model(user_model, MemoryItem, name_suffix="MemoryItem"),
+    )
+    category_item_model = cast(
+        type[CategoryItem],
+        merge_scope_model(user_model, CategoryItem, name_suffix="CategoryItem"),
+    )
     return resource_model, memory_category_model, memory_item_model, category_item_model
 
 

@@ -32,7 +32,9 @@ class SQLiteSQLAModels:
 _MODEL_CACHE: dict[type[Any], SQLiteSQLAModels] = {}
 
 
-def get_sqlite_sqlalchemy_models(*, scope_model: type[BaseModel] | None = None) -> SQLiteSQLAModels:
+def get_sqlite_sqlalchemy_models(
+    *, scope_model: type[BaseModel] | None = None
+) -> SQLiteSQLAModels:
     """Build (and cache) SQLModel ORM models for SQLite storage.
 
     Args:
@@ -100,7 +102,9 @@ def get_sqlite_metadata(scope_model: type[BaseModel] | None = None) -> MetaData:
     """
     from typing import cast
 
-    return cast(MetaData, get_sqlite_sqlalchemy_models(scope_model=scope_model).Base.metadata)
+    return cast(
+        MetaData, get_sqlite_sqlalchemy_models(scope_model=scope_model).Base.metadata
+    )
 
 
 __all__ = ["SQLiteSQLAModels", "get_sqlite_metadata", "get_sqlite_sqlalchemy_models"]

@@ -1,68 +1,108 @@
 # memU Engine for OpenClaw (中文版)
 
-> **链接导航**：
-> - **OpenClaw (Official)**: [https://github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)
-> - **MemU (Core Engine)**: [https://github.com/NevaMind-AI/MemU](https://github.com/NevaMind-AI/MemU)
+项目链接：
 
----
+- OpenClaw: https://github.com/openclaw/openclaw
+- MemU（上游）: https://github.com/NevaMind-AI/MemU
 
-## 💡 项目简介
+## 这是什么
 
-**memU Engine** 是一个为 OpenClaw 设计的**增强型记忆后端插件**。
+`memu-engine` 是一个社区维护的 OpenClaw 记忆插件，用来把 OpenClaw 的会话日志接入 MemU。
+它提供 `memory_search` 和 `memory_get`，并在 OpenClaw 工作区中保存一个 SQLite 长期记忆库。
 
-它不仅仅是简单的“文件搜索”，而是将 OpenClaw 的对话流实时接入 **memU 智能记忆引擎**，通过大模型自动提取对话中的**原子化知识**（如技能、事件、用户偏好、技术结论），并存入结构化的向量数据库。
+这不是 MemU 或 OpenClaw 官方项目，只是一个尽量贴近上游、偏工程化的集成尝试。
 
-该插件旨在**无缝替换** OpenClaw 默认的 `memory-core`（Markdown 检索），让你的 AI 助手拥有更精准、更具上下文关联能力的长期记忆。
+## 它做什么
 
----
+- 监听 OpenClaw 的会话 `.jsonl` 文件，增量录入新消息。
+- 用 MemU 抽取“原子化”的记忆条目（profile/event/knowledge/skill/tool 等）。
+- 数据存储在 `~/.openclaw/workspace/memU/data/memu.db`（SQLite）。
 
-## ✨ 核心优势
+另外它也支持录入额外的 Markdown 资料（例如：项目文档、扩展文档等），让记忆库可以引用真实文件内容。
 
-1.  **原子化知识提取 (Atomic Knowledge)**
-    *   告别粗糙的“文本块切分”。memU 会自动分析对话，将其拆解为 `Profile`（画像）、`Event`（事件）、`Knowledge`（知识）、`Skill`（技能）等独立条目。
-    *   **效果**：搜索“Docker配置”时，不再返回一堆闲聊废话，而是精准返回配置指令和相关决策。
+## 安装
 
-2.  **实时事件驱动同步 (Real-time & Zero-Idle)**
-    *   **传统方案**：定时轮询（费资源、有延迟）。
-    *   **本方案**：采用 `watchdog` 监听文件系统。**你不说话，它不动（零 Token 消耗）；你一发消息，它秒级录入。**
+### 让 OpenClaw 自己安装（对 Agent 友好）
 
-3.  **Python 3.13 兼容性增强**
-    *   内置了针对 SQLModel 在 Python 3.13 下 `list[float]` 映射问题的修复补丁，确保在最新环境下稳定运行。
+如果你使用的 OpenClaw Agent 具备操作本机的能力，通常直接让它阅读本 README 并按步骤安装即可。
 
-4.  **无缝原生体验**
-    *   **接口对齐**：完美实现 OpenClaw 官方定义的 `memory_search` 和 `memory_get` 接口。系统感觉不到底层的变化，但回忆质量大幅提升。
-    *   **跨平台**：内置 Node.js 进程守护，支持 Linux/macOS/Windows，无需手动配置 systemd。
+可以发给 OpenClaw 的提示词（请替换仓库地址）：
 
----
+```text
+请从 https://github.com/<you>/<repo> 安装 OpenClaw 插件 `memu-engine`。
 
-## 📦 安装与配置
-
-### 1. 安装插件
-进入你的 OpenClaw 扩展目录：
-```bash
-cd ~/.openclaw/extensions
-git clone https://github.com/<你的用户名>/openclaw-memu-engine memu-engine
+步骤：
+1) git clone 该仓库。
+2) 复制到 ~/.openclaw/extensions/memu-engine。
+3) 修改 ~/.openclaw/openclaw.json：
+   - plugins.slots.memory = "memu-engine"
+   - plugins.entries["memu-engine"].enabled = true
+   - 配置 embedding + extraction 的模型参数（不要把真实密钥写进日志）
+4) 重启网关：openclaw gateway restart
+5) 调用一次 memory_search 验证。
 ```
 
-### 2. 配置 (`openclaw.json`)
-在你的配置文件中启用插件，并填入 Embedding 服务商（如 SiliconFlow 或 OpenAI）的 Key。
+### 手动安装
+
+1) 从 git 下载
+
+```bash
+mkdir -p ~/src
+cd ~/src
+git clone https://github.com/<you>/<repo>.git memu-engine
+```
+
+2) 复制到 OpenClaw 扩展目录
+
+```bash
+mkdir -p ~/.openclaw/extensions
+rm -rf ~/.openclaw/extensions/memu-engine
+cp -R ~/src/memu-engine ~/.openclaw/extensions/memu-engine
+```
+
+3) 先修改配置（再重启）
+
+编辑 `~/.openclaw/openclaw.json`，设置 memory slot 和插件参数（示例见下方）。
+
+4) 重启网关
+
+```bash
+openclaw gateway restart
+```
+
+如果你在修改 `openclaw.json` 之前就重启，OpenClaw 可能仍在使用旧的 memory slot，从而出现一些看起来
+不相关的报错。
+
+## 配置
+
+在 `~/.openclaw/openclaw.json` 中绑定 memory slot，并填写模型参数。
+
+插件会通过环境变量把配置传给 MemU：
+
+- `embedding.*` -> `MEMU_EMBED_*`
+- `extraction.*` -> `MEMU_CHAT_*`
+
+示例（不要填真实 key）：
 
 ```json
 {
   "plugins": {
-    // 关键：将记忆槽位指定为 memu-engine
-    "slots": {
-      "memory": "memu-engine"
-    },
+    "slots": { "memory": "memu-engine" },
     "entries": {
       "memu-engine": {
         "enabled": true,
         "config": {
           "embedding": {
-            "provider": "openai", // 兼容 OpenAI 格式
-            "apiKey": "sk-...",   // 你的 SiliconFlow 或 OpenAI Key
-            "baseUrl": "https://api.siliconflow.cn/v1",
-            "model": "BAAI/bge-m3"
+            "provider": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "model": "text-embedding-3-small"
+          },
+          "extraction": {
+            "provider": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "model": "gpt-4o-mini"
           }
         }
       }
@@ -71,21 +111,105 @@ git clone https://github.com/<你的用户名>/openclaw-memu-engine memu-engine
 }
 ```
 
-### 3. 重启生效
-重启 OpenClaw Gateway，插件会自动拉起后台同步服务。
+可选：
 
----
+- `ingest.extraPaths`: 额外录入的 Markdown 目录/文件列表
+- `MEMU_USER_ID`: 覆盖默认 user id（默认：`default`）
 
-## 🛠️ 架构说明
+### 录入额外 Markdown（文档）
 
-*   **Plugin Layer (Node.js)**: 负责与 OpenClaw 交互，管理 Python 子进程生命周期。
-*   **Sync Layer (Python)**:
-    *   `watch_sync.py`: 文件监听哨兵。
-    *   `auto_sync.py`: 增量同步核心，负责调用 LLM 提取记忆。
-*   **Storage Layer**: 数据存储于用户工作区 `workspace/memU/data/memu.db` (SQLite)，确保数据主权。
+默认情况下，本插件会录入 OpenClaw 常见的 Markdown 来源：
 
----
+- `~/.openclaw/workspace/*.md`（例如：`AGENTS.md`、`MEMORY.md`）
+- `~/.openclaw/workspace/memory/*.md`（长期记忆笔记）
 
-## 🤝 贡献与开源
-本项目遵循 MIT 协议。欢迎提交 PR 或 Issue。
-如果你是 OpenClaw 官方开发者，欢迎评估将此架构合入官方 `extensions/` 仓库。
+你可以通过 `ingest.includeDefaultPaths=false` 关闭默认录入。
+
+如果你配置了 `ingest.extraPaths`，后台 watcher 还会：
+
+- 扫描这些目录/文件下的 `*.md`
+- 录入到 MemU 的 SQLite 记忆库
+- 文件变更时自动增量更新（带 debounce）
+
+适用场景：
+
+- 项目文档（`docs/`、`README.md` 等）
+- OpenClaw 扩展文档（你提供任意目录路径即可）
+
+示例：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "ingest": {
+            "includeDefaultPaths": true,
+            "extraPaths": [
+              "/home/you/project/docs",
+              "/home/you/project/README.md"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### 读取记忆来源文件
+
+`memory_get` 支持两种输入：
+
+- 物理文件路径（直接从磁盘读取）
+- MemU 的资源 id/URL（形如 `memu://<id>`）
+
+`memory_search` 的输出里会带 `Source:`，把这个值原样传给 `memory_get` 就能读到完整内容。
+
+## 本地模型支持
+
+MemU 支持通过 `provider` + `baseUrl` + `model` 配置不同模型服务。
+
+如果你的本地推理服务暴露了 OpenAI 兼容的 `/v1` 接口（例如 vLLM、LM Studio、llama.cpp server、
+或者启用 OpenAI 兼容模式的 Ollama），通常可以这样配置：
+
+- `provider: openai`
+- `baseUrl: http://127.0.0.1:PORT/v1`
+- `apiKey: 随便填`（很多本地服务不会校验）
+- `model: <本地模型名称>`
+
+提示：MemU 上游还支持更高级的 provider/client backend 选项，但本插件目前只映射最常用的基础字段。
+
+## 上游 / 更新
+
+MemU 核心代码被 vendoring 到 `python/src/memu/`。
+
+- `python/UPSTREAM.md` 记录了上游版本与本项目的补丁列表。
+- `update_from_upstream.sh` 是一个同步脚本（尽力而为；同步后建议手动 review）。
+
+如果你之前跑过使用不同 SQLite 表名的旧版本，可能需要删除 `~/.openclaw/workspace/memU/data/memu.db`
+让它重新创建。
+
+## 可移植性说明（原生扩展）
+
+MemU 上游包含一个 Rust 编写的 Python 原生扩展（`memu._core`）。本仓库目前将 MemU 代码 vendoring
+到 `python/src/memu/`。
+
+如果你计划把插件发布给更多平台（macOS/Windows/Linux），需要提前考虑这个原生模块的分发策略（例如：
+安装时用 maturin 从上游构建，或者直接依赖上游的 wheel，而不是 vendoring）。
+
+## 验证
+
+安装并配置后：
+
+```bash
+openclaw gateway restart
+openclaw agent --message "Call the tool memory_search with query=\"test\"." --thinking off
+```
+
+如果模型参数配置正确，第一次调用也会拉起后台 watcher 并开始录入工作区文档。
+
+## 贡献（可选）
+
+如果你计划把它贡献给 OpenClaw，上游审查通常更喜欢补丁面尽量小（可参考 `python/UPSTREAM.md`）。

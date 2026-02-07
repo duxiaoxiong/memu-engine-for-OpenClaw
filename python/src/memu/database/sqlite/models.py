@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy import JSON, MetaData, String, Text
 from sqlmodel import Column, DateTime, Field, Index, SQLModel, func
 
-from memu.database.models import CategoryItem, MemoryCategory, MemoryItem, MemoryType, Resource
+from memu.database.models import MemoryType
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,9 @@ class SQLiteResourceModel(SQLiteBaseModelMixin, SQLModel):
     local_path: str = Field(sa_column=Column(String, nullable=False))
     caption: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
     # Store embedding as JSON string since SQLite doesn't have native vector type
-    embedding_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    embedding_json: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
     @property
     def embedding(self) -> list[float] | None:
@@ -82,8 +84,12 @@ class SQLiteMemoryItemModel(SQLiteBaseModelMixin, SQLModel):
     memory_type: MemoryType = Field(sa_column=Column(String, nullable=False))
     summary: str = Field(sa_column=Column(Text, nullable=False))
     # Store embedding as JSON string since SQLite doesn't have native vector type
-    embedding_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
-    happened_at: datetime | None = Field(default=None, sa_column=Column(DateTime, nullable=True))
+    embedding_json: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    happened_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime, nullable=True)
+    )
     extra: dict[str, Any] = Field(default={}, sa_column=Column(JSON, nullable=True))
 
     @property
@@ -112,7 +118,9 @@ class SQLiteMemoryCategoryModel(SQLiteBaseModelMixin, SQLModel):
     name: str = Field(sa_column=Column(String, nullable=False, index=True))
     description: str = Field(sa_column=Column(Text, nullable=False))
     # Store embedding as JSON string since SQLite doesn't have native vector type
-    embedding_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    embedding_json: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
     summary: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
 
     @property
@@ -135,13 +143,17 @@ class SQLiteMemoryCategoryModel(SQLiteBaseModelMixin, SQLModel):
             self.embedding_json = json.dumps(value)
 
 
-class SQLiteCategoryItemModel(SQLiteBaseModelMixin, CategoryItem):
+class SQLiteCategoryItemModel(SQLiteBaseModelMixin, SQLModel):
     """SQLite category-item relation model."""
 
     item_id: str = Field(sa_column=Column(String, nullable=False))
     category_id: str = Field(sa_column=Column(String, nullable=False))
 
-    __table_args__ = (Index("idx_sqlite_category_items_unique", "item_id", "category_id", unique=True),)
+    __table_args__ = (
+        Index(
+            "idx_sqlite_category_items_unique", "item_id", "category_id", unique=True
+        ),
+    )
 
 
 def _normalize_table_args(table_args: Any) -> tuple[list[Any], dict[str, Any]]:
@@ -173,7 +185,7 @@ def _merge_models(
         msg = f"Scope fields conflict with core model fields: {sorted(overlap)}"
         raise TypeError(msg)
 
-    return type(
+    return type(  # pyright: ignore[reportGeneralTypeIssues]
         f"{user_model.__name__}{core_model.__name__}{name_suffix}",
         (user_model, core_model),
         base_attrs,
@@ -196,7 +208,9 @@ def build_sqlite_table_model(
         raise TypeError(msg)
 
     scope_fields = list(user_model.model_fields.keys())
-    base_table_args, table_kwargs = _normalize_table_args(getattr(core_model, "__table_args__", None))
+    base_table_args, table_kwargs = _normalize_table_args(
+        getattr(core_model, "__table_args__", None)
+    )
     table_args = list(base_table_args)
     if extra_table_args:
         table_args.extend(extra_table_args)
@@ -204,9 +218,14 @@ def build_sqlite_table_model(
         table_args.append(Index(f"ix_{tablename}__scope", *scope_fields))
     if unique_with_scope:
         unique_cols = [*unique_with_scope, *scope_fields]
-        table_args.append(Index(f"ix_{tablename}__unique_scoped", *unique_cols, unique=True))
+        table_args.append(
+            Index(f"ix_{tablename}__unique_scoped", *unique_cols, unique=True)
+        )
 
-    base_attrs: dict[str, Any] = {"__module__": core_model.__module__, "__tablename__": tablename}
+    base_attrs: dict[str, Any] = {
+        "__module__": core_model.__module__,
+        "__tablename__": tablename,
+    }
     if metadata is not None:
         base_attrs["metadata"] = metadata
     if table_args or table_kwargs:
@@ -215,7 +234,9 @@ def build_sqlite_table_model(
         else:
             base_attrs["__table_args__"] = tuple(table_args)
 
-    base = _merge_models(user_model, core_model, name_suffix="SQLiteBase", base_attrs=base_attrs)
+    base = _merge_models(
+        user_model, core_model, name_suffix="SQLiteBase", base_attrs=base_attrs
+    )
 
     # Use type() instead of create_model to properly preserve SQLModel table behavior
     table_attrs: dict[str, Any] = {"__module__": core_model.__module__}

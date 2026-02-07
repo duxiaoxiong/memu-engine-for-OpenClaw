@@ -118,13 +118,27 @@ if __name__ == "__main__":
     extra_paths = get_extra_paths()
     if extra_paths:
         docs_handler = SyncHandler("docs_ingest.py", [".md"])
+        # Watch directories recursively; if a file path is provided, watch its parent directory.
+        watched_dirs: set[tuple[str, bool]] = set()
         for path_item in extra_paths:
-            if os.path.exists(path_item):
-                print(f"Watching docs: {path_item}")
-                # Watch recursively for docs
-                observer.schedule(docs_handler, path_item, recursive=True)
-            else:
+            if not os.path.exists(path_item):
                 print(f"Warning: Extra path {path_item} not found.")
+                continue
+
+            if os.path.isdir(path_item):
+                watch_dir = path_item
+                recursive = True
+            else:
+                watch_dir = os.path.dirname(path_item) or "."
+                recursive = False
+
+            key = (watch_dir, recursive)
+            if key in watched_dirs:
+                continue
+            watched_dirs.add(key)
+
+            print(f"Watching docs: {watch_dir}")
+            observer.schedule(docs_handler, watch_dir, recursive=recursive)
         # Trigger initial docs sync
         docs_handler.trigger_sync()
 

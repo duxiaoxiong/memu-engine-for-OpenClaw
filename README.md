@@ -1,68 +1,112 @@
 # memU Engine for OpenClaw
 
-> **Links**:
-> - **OpenClaw (Official)**: [https://github.com/openclaw/openclaw](https://github.com/openclaw/openclaw)
-> - **MemU (Core Engine)**: [https://github.com/NevaMind-AI/MemU](https://github.com/NevaMind-AI/MemU)
+Links:
 
----
+- OpenClaw: https://github.com/openclaw/openclaw
+- MemU (upstream): https://github.com/NevaMind-AI/MemU
 
-## 💡 Introduction
+## What this is
 
-**memU Engine** is an enhanced **memory backend plugin** for OpenClaw.
+`memu-engine` is a community OpenClaw memory plugin that wires OpenClaw sessions into the MemU engine.
+It provides `memory_search` and `memory_get`, and keeps a SQLite-backed long-term store under the OpenClaw
+workspace.
 
-Instead of simple file search, it connects OpenClaw's conversation stream to the **memU intelligent memory engine**. It uses LLMs to automatically extract **atomic knowledge** (skills, events, user preferences, technical conclusions) from conversations and stores them in a structured vector database.
+This is not an official MemU/OpenClaw project. It is a pragmatic integration that tries to stay close to
+upstream and keep the moving parts simple.
 
-This plugin is designed to **seamlessly replace** OpenClaw's default `memory-core` (Markdown search), giving your AI assistant more precise and context-aware long-term memory.
+## What it does
 
----
+- Watches OpenClaw session `.jsonl` files and incrementally ingests new messages.
+- Uses MemU to extract atomic memory items (profile/event/knowledge/skill/tool, etc.).
+- Stores everything in SQLite at `~/.openclaw/workspace/memU/data/memu.db`.
 
-## ✨ Key Features
+It can also ingest extra Markdown sources (for example: docs inside your workspace, or extension docs),
+so the memory database can answer questions with citations to real files.
 
-1.  **Atomic Knowledge Extraction**
-    *   Say goodbye to rough text chunking. memU automatically analyzes conversations and breaks them down into independent items like `Profile`, `Event`, `Knowledge`, `Skill`, etc.
-    *   **Effect**: Searching for "Docker config" returns precise configuration commands and decisions, not just chat noise.
+## Install
 
-2.  **Real-time Event-Driven Sync (Zero-Idle)**
-    *   **Traditional**: Polling (resource-intensive, high latency).
-    *   **This Solution**: Uses `watchdog` to monitor the filesystem. **It does nothing when you're silent (zero token usage); it ingests instantly when you send a message.**
+### Ask OpenClaw to install (agent-friendly)
 
-3.  **Python 3.13 Compatibility**
-    *   Includes built-in patches for SQLModel `list[float]` mapping issues on Python 3.13+, ensuring stability in modern environments.
+If you are using OpenClaw as an agent that can operate your machine, you can usually just tell it to read
+this README and install the extension.
 
-4.  **Seamless Native Experience**
-    *   **Interface Aligned**: Perfectly implements the official `memory_search` and `memory_get` interfaces. The system feels unchanged, but recall quality is drastically improved.
-    *   **Cross-Platform**: Built-in Node.js process management supports Linux/macOS/Windows without manual systemd configuration.
+Suggested message to OpenClaw (edit the repo URL):
 
----
+```text
+Please install the OpenClaw plugin `memu-engine` from https://github.com/<you>/<repo>.
 
-## 📦 Installation & Configuration
-
-### 1. Install Plugin
-Navigate to your OpenClaw extensions directory:
-```bash
-cd ~/.openclaw/extensions
-git clone https://github.com/<your-username>/openclaw-memu-engine memu-engine
+Steps:
+1) Clone the repo.
+2) Copy it to ~/.openclaw/extensions/memu-engine.
+3) Update ~/.openclaw/openclaw.json:
+   - plugins.slots.memory = "memu-engine"
+   - plugins.entries["memu-engine"].enabled = true
+   - configure embedding + extraction models (no secrets in logs)
+4) Restart the gateway: openclaw gateway restart
+5) Verify by calling the tool memory_search once.
 ```
 
-### 2. Configure (`openclaw.json`)
-Enable the plugin in your config file and provide an Embedding Provider Key (e.g., SiliconFlow or OpenAI).
+### Manual install
+
+1) Download from git
+
+```bash
+mkdir -p ~/src
+cd ~/src
+git clone https://github.com/<you>/<repo>.git memu-engine
+```
+
+2) Copy into the OpenClaw extensions directory
+
+```bash
+mkdir -p ~/.openclaw/extensions
+rm -rf ~/.openclaw/extensions/memu-engine
+cp -R ~/src/memu-engine ~/.openclaw/extensions/memu-engine
+```
+
+3) Configure OpenClaw first (before restarting)
+
+Edit `~/.openclaw/openclaw.json` and set the memory slot + plugin config (example below).
+
+4) Restart the gateway
+
+```bash
+openclaw gateway restart
+```
+
+If you restart the gateway before updating `openclaw.json`, OpenClaw may still be using the old memory
+slot and you can see confusing errors.
+
+## Configure
+
+In `~/.openclaw/openclaw.json`, assign the memory slot and provide model settings.
+
+This plugin passes config to MemU via environment variables:
+
+- `embedding.*` -> `MEMU_EMBED_*`
+- `extraction.*` -> `MEMU_CHAT_*`
+
+Example (no real keys):
 
 ```json
 {
   "plugins": {
-    // Key: Assign the memory slot to memu-engine
-    "slots": {
-      "memory": "memu-engine"
-    },
+    "slots": { "memory": "memu-engine" },
     "entries": {
       "memu-engine": {
         "enabled": true,
         "config": {
           "embedding": {
-            "provider": "openai", // OpenAI compatible
-            "apiKey": "sk-...",   // Your SiliconFlow or OpenAI Key
-            "baseUrl": "https://api.siliconflow.cn/v1",
-            "model": "BAAI/bge-m3"
+            "provider": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "model": "text-embedding-3-small"
+          },
+          "extraction": {
+            "provider": "openai",
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-...",
+            "model": "gpt-4o-mini"
           }
         }
       }
@@ -71,21 +115,110 @@ Enable the plugin in your config file and provide an Embedding Provider Key (e.g
 }
 ```
 
-### 3. Restart
-Restart the OpenClaw Gateway. The plugin will automatically launch the background sync service.
+Optional:
 
----
+- `ingest.extraPaths`: list of directories/files to ingest Markdown from.
+- `MEMU_USER_ID`: override the default user id (default: `default`).
 
-## 🛠️ Architecture
+### Import extra Markdown (docs)
 
-*   **Plugin Layer (Node.js)**: Handles interaction with OpenClaw and manages the Python subprocess lifecycle.
-*   **Sync Layer (Python)**:
-    *   `watch_sync.py`: Filesystem watchdog sentinel.
-    *   `auto_sync.py`: Incremental sync core, handles LLM memory extraction.
-*   **Storage Layer**: Data is stored in the user workspace at `workspace/memU/data/memu.db` (SQLite) to ensure data sovereignty.
+By default, this plugin ingests common OpenClaw Markdown sources:
 
----
+- `~/.openclaw/workspace/*.md` (for example: `AGENTS.md`, `MEMORY.md`)
+- `~/.openclaw/workspace/memory/*.md` (durable memory notes)
 
-## 🤝 Contribution
-This project is MIT licensed. PRs and Issues are welcome.
-If you are an OpenClaw official developer, feel free to evaluate merging this architecture into the official `extensions/` repo.
+You can disable the defaults by setting `ingest.includeDefaultPaths` to `false`.
+
+If you set `ingest.extraPaths`, the background watcher will also:
+
+- scan those directories/files for `*.md`
+- ingest them into the MemU SQLite store
+- re-ingest on changes (debounced)
+
+This is useful for indexing things like:
+
+- your project docs (`docs/`, `README.md`)
+- OpenClaw extension docs (any folder path you provide)
+
+Example:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "ingest": {
+            "includeDefaultPaths": true,
+            "extraPaths": [
+              "/home/you/project/docs",
+              "/home/you/project/README.md"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+### Read back memory sources
+
+`memory_get` accepts:
+
+- a physical file path (it reads from disk)
+- a MemU resource id / URL in the form `memu://<id>`
+
+`memory_search` prints a `Source:` for each hit. You can pass that value into `memory_get` to read the
+full text.
+
+## Local model support
+
+MemU supports configuring providers via `provider` + `baseUrl` + `model`.
+
+If your local runtime exposes an OpenAI-compatible `/v1` API (vLLM, LM Studio, llama.cpp server, Ollama in
+OpenAI-compatible mode, etc.), you can typically set:
+
+- `provider: openai`
+- `baseUrl: http://127.0.0.1:PORT/v1`
+- `apiKey: anything` (many local servers ignore it)
+- `model: <your-local-model-name>`
+
+Note: advanced MemU provider features (like switching `client_backend`) are supported upstream, but this
+plugin currently only maps the basic fields into `LLMConfig`.
+
+## Upstream / updates
+
+The MemU core is vendored into `python/src/memu/`.
+
+- See `python/UPSTREAM.md` for the exact upstream reference and a patch list.
+- `update_from_upstream.sh` is a helper for refreshing from upstream (best-effort; review changes after).
+
+If you previously ran an older variant that used different SQLite table names, you may need to delete
+`~/.openclaw/workspace/memU/data/memu.db` and let it rebuild.
+
+## Portability note (native extension)
+
+Upstream MemU ships a Rust-backed Python extension (`memu._core`). This repository currently vendors the
+package under `python/src/memu/`.
+
+If you plan to publish this plugin for broad use (macOS/Windows/Linux), you will need a distribution
+strategy for that native module (for example: build from upstream via maturin during installation, or
+depend on upstream wheels instead of vendoring).
+
+## Verify
+
+After installation and configuration:
+
+```bash
+openclaw gateway restart
+openclaw agent --message "Call the tool memory_search with query=\"test\"." --thinking off
+```
+
+If the models are configured correctly, the first call will also start the background watcher and ingest
+workspace docs.
+
+## Contributing (optional)
+
+If you plan to upstream this to OpenClaw, keeping the patch surface small (see `python/UPSTREAM.md`) makes
+review much easier.

@@ -8,6 +8,9 @@ from memu.app.settings import (
     LLMConfig,
     MetadataStoreConfig,
     RetrieveConfig,
+    RetrieveCategoryConfig,
+    RetrieveItemConfig,
+    RetrieveResourceConfig,
 )
 
 
@@ -18,29 +21,42 @@ def _env(name: str, default: str | None = None) -> str | None:
         return v
     return default
 
+
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
     if not data_dir:
         # Fallback for standalone dev: use local 'data' dir
-        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        base = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
         data_dir = os.path.join(base, "data")
-    
+
     os.makedirs(data_dir, exist_ok=True)
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
+
 async def search(query_text: str, user_id: str = "xiaoxiong"):
+    user_id = _env("MEMU_USER_ID", user_id) or user_id
     chat_kwargs = {}
-    if p := _env("MEMU_CHAT_PROVIDER"): chat_kwargs["provider"] = p
-    if u := _env("MEMU_CHAT_BASE_URL"): chat_kwargs["base_url"] = u
-    if k := _env("MEMU_CHAT_API_KEY"): chat_kwargs["api_key"] = k
-    if m := _env("MEMU_CHAT_MODEL"): chat_kwargs["chat_model"] = m
+    if p := _env("MEMU_CHAT_PROVIDER"):
+        chat_kwargs["provider"] = p
+    if u := _env("MEMU_CHAT_BASE_URL"):
+        chat_kwargs["base_url"] = u
+    if k := _env("MEMU_CHAT_API_KEY"):
+        chat_kwargs["api_key"] = k
+    if m := _env("MEMU_CHAT_MODEL"):
+        chat_kwargs["chat_model"] = m
     chat_config = LLMConfig(**chat_kwargs)
 
     embed_kwargs = {}
-    if p := _env("MEMU_EMBED_PROVIDER"): embed_kwargs["provider"] = p
-    if u := _env("MEMU_EMBED_BASE_URL"): embed_kwargs["base_url"] = u
-    if k := _env("MEMU_EMBED_API_KEY"): embed_kwargs["api_key"] = k
-    if m := _env("MEMU_EMBED_MODEL"): embed_kwargs["embed_model"] = m
+    if p := _env("MEMU_EMBED_PROVIDER"):
+        embed_kwargs["provider"] = p
+    if u := _env("MEMU_EMBED_BASE_URL"):
+        embed_kwargs["base_url"] = u
+    if k := _env("MEMU_EMBED_API_KEY"):
+        embed_kwargs["api_key"] = k
+    if m := _env("MEMU_EMBED_MODEL"):
+        embed_kwargs["embed_model"] = m
     embed_config = LLMConfig(**embed_kwargs)
     db_config = DatabaseConfig(
         metadata_store=MetadataStoreConfig(
@@ -52,9 +68,9 @@ async def search(query_text: str, user_id: str = "xiaoxiong"):
     # Always query DB; keep results small to avoid context explosion.
     retr_config = RetrieveConfig(
         route_intention=False,
-        item={"enabled": True, "top_k": 8},
-        category={"enabled": True, "top_k": 5},
-        resource={"enabled": True, "top_k": 3},
+        item=RetrieveItemConfig(enabled=True, top_k=8),
+        category=RetrieveCategoryConfig(enabled=True, top_k=5),
+        resource=RetrieveResourceConfig(enabled=True, top_k=3),
     )
 
     service = MemoryService(
@@ -88,9 +104,13 @@ if __name__ == "__main__":
                 # Construct a valid path for memory_get
                 # Keep as-is if file path; add prefix if ID
                 source_path = res_url
-                if res_url and not res_url.startswith("/") and not res_url.startswith("."):
+                if (
+                    res_url
+                    and not res_url.startswith("/")
+                    and not res_url.startswith(".")
+                ):
                     source_path = f"memu://{res_url}"
-                
+
                 source_part = f" [Source: {source_path}]" if source_path else ""
                 print(f"- [{mtype}]: {summary}{source_part}")
         else:
