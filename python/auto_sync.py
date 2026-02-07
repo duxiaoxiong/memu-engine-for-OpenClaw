@@ -52,22 +52,20 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 def build_service() -> MemoryService:
     # Chat LLM (Extraction)
-    chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")
-    chat_config = LLMConfig(
-        provider=chat_provider,
-        base_url=_env("MEMU_CHAT_BASE_URL", "https://api.openai.com/v1"),
-        api_key=_env("MEMU_CHAT_API_KEY", ""),
-        chat_model=_env("MEMU_CHAT_MODEL", "gpt-4o-mini"),
-    )
+    chat_kwargs = {}
+    if p := _env("MEMU_CHAT_PROVIDER"): chat_kwargs["provider"] = p
+    if u := _env("MEMU_CHAT_BASE_URL"): chat_kwargs["base_url"] = u
+    if k := _env("MEMU_CHAT_API_KEY"): chat_kwargs["api_key"] = k
+    if m := _env("MEMU_CHAT_MODEL"): chat_kwargs["chat_model"] = m
+    chat_config = LLMConfig(**chat_kwargs)
 
-    # Embedding (Generic)
-    embed_provider = _env("MEMU_EMBED_PROVIDER", "openai")
-    embed_config = LLMConfig(
-        provider=embed_provider,
-        base_url=_env("MEMU_EMBED_BASE_URL", "https://api.openai.com/v1"),
-        api_key=_env("MEMU_EMBED_API_KEY", ""),
-        embed_model=_env("MEMU_EMBED_MODEL", "text-embedding-3-small"),
-    )
+    # Embedding
+    embed_kwargs = {}
+    if p := _env("MEMU_EMBED_PROVIDER"): embed_kwargs["provider"] = p
+    if u := _env("MEMU_EMBED_BASE_URL"): embed_kwargs["base_url"] = u
+    if k := _env("MEMU_EMBED_API_KEY"): embed_kwargs["api_key"] = k
+    if m := _env("MEMU_EMBED_MODEL"): embed_kwargs["embed_model"] = m
+    embed_config = LLMConfig(**embed_kwargs)
 
     db_config = DatabaseConfig(
         metadata_store=MetadataStoreConfig(provider="sqlite", dsn=get_db_dsn())

@@ -29,20 +29,19 @@ def get_db_dsn() -> str:
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 async def search(query_text: str, user_id: str = "xiaoxiong"):
-    chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")
-    chat_config = LLMConfig(
-        provider=chat_provider,
-        base_url=_env("MEMU_CHAT_BASE_URL", "https://api.openai.com/v1"),
-        api_key=_env("MEMU_CHAT_API_KEY", ""),
-        chat_model=_env("MEMU_CHAT_MODEL", "gpt-4o-mini"),
-    )
-    embed_provider = _env("MEMU_EMBED_PROVIDER", "openai")
-    embed_config = LLMConfig(
-        provider=embed_provider,
-        base_url=_env("MEMU_EMBED_BASE_URL", "https://api.openai.com/v1"),
-        api_key=_env("MEMU_EMBED_API_KEY", ""),
-        embed_model=_env("MEMU_EMBED_MODEL", "text-embedding-3-small"),
-    )
+    chat_kwargs = {}
+    if p := _env("MEMU_CHAT_PROVIDER"): chat_kwargs["provider"] = p
+    if u := _env("MEMU_CHAT_BASE_URL"): chat_kwargs["base_url"] = u
+    if k := _env("MEMU_CHAT_API_KEY"): chat_kwargs["api_key"] = k
+    if m := _env("MEMU_CHAT_MODEL"): chat_kwargs["chat_model"] = m
+    chat_config = LLMConfig(**chat_kwargs)
+
+    embed_kwargs = {}
+    if p := _env("MEMU_EMBED_PROVIDER"): embed_kwargs["provider"] = p
+    if u := _env("MEMU_EMBED_BASE_URL"): embed_kwargs["base_url"] = u
+    if k := _env("MEMU_EMBED_API_KEY"): embed_kwargs["api_key"] = k
+    if m := _env("MEMU_EMBED_MODEL"): embed_kwargs["embed_model"] = m
+    embed_config = LLMConfig(**embed_kwargs)
     db_config = DatabaseConfig(
         metadata_store=MetadataStoreConfig(
             provider="sqlite",
