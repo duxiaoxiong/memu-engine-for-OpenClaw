@@ -128,9 +128,7 @@ const memuEnginePlugin = {
 
     const searchSchema = {
       type: "object",
-      additionalProperties: true,
-      properties: { query: { type: "string" }, maxResults: { type: "number" }, minScore: { type: "number" } },
-      required: ["query"]
+      additionalProperties: true
     };
 
     api.registerTool((ctx) => [{
@@ -153,9 +151,7 @@ const memuEnginePlugin = {
 
     const getSchema = {
       type: "object",
-      additionalProperties: true,
-      properties: { path: { type: "string", description: "Path to the memory file or memU resource URL." } },
-      required: ["path"]
+      additionalProperties: true
     };
 
     api.registerTool((ctx) => [{
