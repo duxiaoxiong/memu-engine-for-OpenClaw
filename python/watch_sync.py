@@ -2,13 +2,52 @@ import time
 import subprocess
 import os
 import json
+import tempfile
+import sys
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 # Configuration paths
 SESSIONS_DIR = os.getenv("OPENCLAW_SESSIONS_DIR")
-MEMU_DIR = os.path.dirname(os.path.abspath(__file__)) 
-LOCK_FILE = "/tmp/memu_sync.lock"
+MEMU_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCK_FILE = os.path.join(tempfile.gettempdir(), "memu_sync.lock")
+
+
+def _try_acquire_lock(lock_path: str, stale_seconds: int = 15 * 60):
+    """Best-effort cross-platform lock using O_EXCL.
+
+    - Non-blocking: if another process holds the lock, skip this sync trigger.
+    - Stale lock recovery: if the lock file is older than stale_seconds, remove it.
+    """
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(lock_path, flags)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        return fd
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > stale_seconds:
+                os.remove(lock_path)
+                return _try_acquire_lock(lock_path, stale_seconds=stale_seconds)
+        except FileNotFoundError:
+            return _try_acquire_lock(lock_path, stale_seconds=stale_seconds)
+        except Exception:
+            pass
+        return None
+
+
+def _release_lock(lock_path: str, fd):
+    try:
+        if fd is not None:
+            os.close(fd)
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
+
 
 def get_extra_paths():
     try:
@@ -16,45 +55,55 @@ def get_extra_paths():
     except:
         return []
 
+
 class SyncHandler(FileSystemEventHandler):
     def __init__(self, script_name, extensions):
         self.script_name = script_name
         self.extensions = extensions
         self.last_run = 0
-        self.debounce_seconds = 5 
+        self.debounce_seconds = 5
 
     def on_modified(self, event):
-        if event.is_directory: return
-        if not any(event.src_path.endswith(ext) for ext in self.extensions): return
+        if event.is_directory:
+            return
+        if not any(event.src_path.endswith(ext) for ext in self.extensions):
+            return
         self.trigger_sync()
 
     def on_created(self, event):
-        if event.is_directory: return
-        if not any(event.src_path.endswith(ext) for ext in self.extensions): return
+        if event.is_directory:
+            return
+        if not any(event.src_path.endswith(ext) for ext in self.extensions):
+            return
         self.trigger_sync()
 
     def trigger_sync(self):
         now = time.time()
         if now - self.last_run < self.debounce_seconds:
             return
-        
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Change detected, triggering {self.script_name}...")
+
+        print(
+            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Change detected, triggering {self.script_name}..."
+        )
+
+        lock_name = f"{LOCK_FILE}_{self.script_name}"
+        lock_fd = _try_acquire_lock(lock_name)
+        if lock_fd is None:
+            return
         try:
             env = os.environ.copy()
-            # Use flock to prevent parallel runs of the SAME script type
-            # Note: We use different lock files for sessions vs docs to allow parallel ingest
-            lock_name = f"{LOCK_FILE}_{self.script_name}"
-            subprocess.run([
-                "flock", "-n", lock_name, 
-                "uv", "run", self.script_name
-            ], cwd=MEMU_DIR, env=env)
+            script_path = os.path.join(MEMU_DIR, self.script_name)
+            subprocess.run([sys.executable, script_path], cwd=MEMU_DIR, env=env)
             self.last_run = time.time()
         except Exception as e:
             print(f"Failed to trigger {self.script_name}: {e}")
+        finally:
+            _release_lock(lock_name, lock_fd)
+
 
 if __name__ == "__main__":
     observer = Observer()
-    
+
     # 1. Watch Sessions
     if SESSIONS_DIR and os.path.exists(SESSIONS_DIR):
         print(f"Watching sessions: {SESSIONS_DIR}")

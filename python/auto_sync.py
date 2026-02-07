@@ -13,7 +13,20 @@ from memu.app.settings import (
 
 from convert_sessions import convert
 
-SYNC_MARKER = os.path.join(os.getenv("MEMU_DATA_DIR", "/home/xiaoxiong/.openclaw/workspace/memU/data"), "last_sync_ts")
+
+def _get_data_dir() -> str:
+    data_dir = os.getenv("MEMU_DATA_DIR")
+    if not data_dir:
+        # Fallback for standalone dev: use local 'data' dir relative to repo root.
+        # This file lives at: <repo>/python/auto_sync.py
+        base = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.join(base, "data")
+    return data_dir
+
+
+def _get_sync_marker_path() -> str:
+    return os.path.join(_get_data_dir(), "last_sync_ts")
+
 
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
@@ -22,16 +35,17 @@ def get_db_dsn() -> str:
         # Assuming script is in python/ or python/scripts/
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_dir = os.path.join(base, "data")
-    
+
     os.makedirs(data_dir, exist_ok=True)
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
+
 
 def _env(name: str, default: str | None = None) -> str | None:
     # Try actual environment first
     v = os.getenv(name)
     if v is not None and str(v).strip():
         return v
-    
+
     # Fallback: manual parse .env if it exists in the same dir
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     if os.path.exists(env_path):
@@ -46,25 +60,33 @@ def _env(name: str, default: str | None = None) -> str | None:
                         return val.strip().strip("'").strip('"')
         except Exception:
             pass
-            
+
     return default
 
 
 def build_service() -> MemoryService:
     # Chat LLM (Extraction)
     chat_kwargs = {}
-    if p := _env("MEMU_CHAT_PROVIDER"): chat_kwargs["provider"] = p
-    if u := _env("MEMU_CHAT_BASE_URL"): chat_kwargs["base_url"] = u
-    if k := _env("MEMU_CHAT_API_KEY"): chat_kwargs["api_key"] = k
-    if m := _env("MEMU_CHAT_MODEL"): chat_kwargs["chat_model"] = m
+    if p := _env("MEMU_CHAT_PROVIDER"):
+        chat_kwargs["provider"] = p
+    if u := _env("MEMU_CHAT_BASE_URL"):
+        chat_kwargs["base_url"] = u
+    if k := _env("MEMU_CHAT_API_KEY"):
+        chat_kwargs["api_key"] = k
+    if m := _env("MEMU_CHAT_MODEL"):
+        chat_kwargs["chat_model"] = m
     chat_config = LLMConfig(**chat_kwargs)
 
     # Embedding
     embed_kwargs = {}
-    if p := _env("MEMU_EMBED_PROVIDER"): embed_kwargs["provider"] = p
-    if u := _env("MEMU_EMBED_BASE_URL"): embed_kwargs["base_url"] = u
-    if k := _env("MEMU_EMBED_API_KEY"): embed_kwargs["api_key"] = k
-    if m := _env("MEMU_EMBED_MODEL"): embed_kwargs["embed_model"] = m
+    if p := _env("MEMU_EMBED_PROVIDER"):
+        embed_kwargs["provider"] = p
+    if u := _env("MEMU_EMBED_BASE_URL"):
+        embed_kwargs["base_url"] = u
+    if k := _env("MEMU_EMBED_API_KEY"):
+        embed_kwargs["api_key"] = k
+    if m := _env("MEMU_EMBED_MODEL"):
+        embed_kwargs["embed_model"] = m
     embed_config = LLMConfig(**embed_kwargs)
 
     db_config = DatabaseConfig(
@@ -87,19 +109,20 @@ def build_service() -> MemoryService:
 
 def _read_last_sync() -> float:
     try:
-        with open(SYNC_MARKER, "r", encoding="utf-8") as f:
+        with open(_get_sync_marker_path(), "r", encoding="utf-8") as f:
             return float(f.read().strip() or "0")
     except Exception:
         return 0.0
 
 
 def _write_last_sync(ts: float) -> None:
-    os.makedirs(os.path.dirname(SYNC_MARKER), exist_ok=True)
-    with open(SYNC_MARKER, "w", encoding="utf-8") as f:
+    marker = _get_sync_marker_path()
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
         f.write(str(ts))
 
 
-async def sync_once(user_id: str = "xiaoxiong") -> None:
+async def sync_once(user_id: str = "default") -> None:
     last_sync = _read_last_sync()
     now_ts = time.time()
 
@@ -123,7 +146,9 @@ async def sync_once(user_id: str = "xiaoxiong") -> None:
         try:
             print(f"[memU auto_sync] ingest: {p}", flush=True)
             await asyncio.wait_for(
-                service.memorize(resource_url=p, modality="conversation", user={"user_id": user_id}),
+                service.memorize(
+                    resource_url=p, modality="conversation", user={"user_id": user_id}
+                ),
                 timeout=timeout_s,
             )
             ok += 1

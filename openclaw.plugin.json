@@ -5,6 +5,10 @@
   "kind": "memory",
   "configSchema": {
     "type": "object",
-    "additionalProperties": true
+    "properties": {
+      "embedding": { "type": "object" },
+      "extraction": { "type": "object" },
+      "ingest": { "type": "object" }
+    }
   }
 }

@@ -6,176 +6,28 @@ authors = [
 ]
 description = "AI Memory and Conversation Management Framework - Simple as mem0, Powerful as MemU"
 readme = "README.md"
-# license = {file = "LICENSE"}
-requires-python = ">=3.13"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
-]
-keywords = ["ai", "memory", "conversation", "llm", "chatbot", "agent"]
+requires-python = ">=3.11"
 dependencies = [
     "defusedxml>=0.7.1",
     "httpx>=0.28.1",
-    "numpy>=2.3.4",
-    "openai>=2.8.0",
-    "pydantic>=2.12.4",
-    "sqlmodel>=0.0.27",
-    "alembic>=1.14.0",
-    "pendulum>=3.1.0",
-    "langchain-core>=1.2.7",
-    "lazyllm>=0.7.3",
-    "watchdog>=6.0.0",
+    "numpy>=2.0.0",
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+    "sqlmodel>=0.0.14",
+    "alembic>=1.13.0",
+    "pendulum>=3.0.0",
+    "langchain-core>=0.1.0",
+    "watchdog>=4.0.0",
+    "lazyllm>=0.7.4",
+    "networkx>=3.6.1",
+    "scipy>=1.17.0",
+    "scikit-learn>=1.8.0",
+    "tiktoken>=0.12.0",
 ]
 
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
-build-backend = "maturin"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.maturin]
-module-name = "memu._core"
-python-packages = ["memu"]
-python-source = "src"
-
-[dependency-groups]
-dev = [
-    {include-group = "docs"},
-    {include-group = "lint"},
-    {include-group = "test"},
-    "langchain-openai>=1.1.7",
-    "langgraph>=1.0.6",
-]
-docs = [
-    "mkdocs>=1.6.1",
-    "mkdocs-material>=9.6.23",
-    "mkdocstrings>=0.30.1",
-    "mkdocstrings-python>=1.18.2",
-]
-lint = [
-    "deptry>=0.23.1",
-    "mypy>=1.18.2",
-    "pre-commit>=4.3.0",
-    "ruff>=0.14.3",
-    "types-defusedxml>=0.7.0",
-]
-test = [
-    "pytest>=8.4.2",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=7.0.0",
-]
-
-[project.optional-dependencies]
-postgres = ["pgvector>=0.3.4", "sqlalchemy[postgresql-psycopgbinary]>=2.0.36"]
-langgraph = ["langgraph>=0.0.10", "langchain-core>=0.1.0"]
-claude = ["claude-agent-sdk>=0.1.24"]
-
-[project.urls]
-"Homepage" = "https://github.com/NevaMind-AI/MemU"
-"Bug Tracker" = "https://github.com/NevaMind-AI/MemU/issues"
-"Documentation" = "https://github.com/NevaMind-AI/MemU#readme"
-
-[project.scripts]
-memu-server = "memu.server.cli:main"
-
-[tool.deptry.per_rule_ignores]
-# Optional dependencies used in examples/
-DEP002 = ["claude-agent-sdk"]
-
-[tool.mypy]
-files = ["src", "tests"]
-python_version = "3.13"
-disallow_untyped_defs = true
-disallow_any_unimported = true
-no_implicit_optional = true
-check_untyped_defs = true
-warn_return_any = true
-warn_unused_ignores = true
-show_error_codes = true
-
-[[tool.mypy.overrides]]
-module = ["tests.*"]
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-warn_unused_ignores = false
-disable_error_code = ["attr-defined", "call-arg"]
-
-[[tool.mypy.overrides]]
-module = ["lazyllm.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["pgvector.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["memu.client.openai_wrapper"]
-disallow_untyped_defs = false
-warn_return_any = false
-
-[tool.ruff]
-target-version = "py313"
-line-length = 120
-fix = true
-
-[tool.ruff.lint]
-select = [
-    # flake8-2020
-    "YTT",
-    # flake8-bandit
-    "S",
-    # flake8-bugbear
-    "B",
-    # flake8-builtins
-    "A",
-    # flake8-comprehensions
-    "C4",
-    # flake8-debugger
-    "T10",
-    # flake8-simplify
-    "SIM",
-    # isort
-    "I",
-    # mccabe
-    "C90",
-    # pycodestyle
-    "E", "W",
-    # pyflakes
-    "F",
-    # pygrep-hooks
-    "PGH",
-    # pyupgrade
-    "UP",
-    # ruff
-    "RUF",
-    # tryceratops
-    "TRY",
-]
-ignore = [
-    # LineTooLong
-    "E501",
-    # DoNotAssignLambda
-    "E731",
-]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S101"]
-"examples/*" = ["E402", "TRY003", "B904", "S104", "TRY300", "SIM108"]
-
-[tool.ruff.format]
-preview = true
-
-[tool.coverage.report]
-skip_empty = true
-
-[tool.coverage.run]
-branch = true
-source = ["memu"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-log_cli = true
-log_cli_level = "INFO"
-asyncio_mode = "auto"
+[tool.hatch.build.targets.wheel]
+packages = ["src/memu"]
