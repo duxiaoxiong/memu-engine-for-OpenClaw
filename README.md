@@ -33,7 +33,7 @@ this README and install the extension.
 Suggested message to OpenClaw:
 
 ```text
-Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.
+Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaoxiong/memu-engine-for-OpenClaw
 ```
 
 ### Manual install
