@@ -5,6 +5,10 @@
 - OpenClaw: https://github.com/openclaw/openclaw
 - MemU（上游）: https://github.com/NevaMind-AI/MemU
 
+语言：
+
+- [English](README.md)
+
 ## 这是什么
 
 `memu-engine` 是一个社区维护的 OpenClaw 记忆插件，用来把 OpenClaw 的会话日志接入 MemU。

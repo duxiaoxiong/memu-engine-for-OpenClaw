@@ -5,6 +5,10 @@ Links:
 - OpenClaw: https://github.com/openclaw/openclaw
 - MemU (upstream): https://github.com/NevaMind-AI/MemU
 
+Language:
+
+- [Chinese](README_CN.md)
+
 ## What this is
 
 `memu-engine` is a community OpenClaw memory plugin that wires OpenClaw sessions into the MemU engine.
