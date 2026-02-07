@@ -9,30 +9,33 @@ const memuEnginePlugin = {
 
   register(api: OpenClawPluginApi) {
     const pythonRoot = path.join(__dirname, "python");
-    // 从上下文获取配置，或者使用环境变量/默认值
-    // 注意：api.config 在 register 阶段可能还未完全解析，建议在工具调用时动态获取，
-    // 但对于后台服务，我们需要一个初始化配置。
-    // 这里简化处理：我们假设用户已经在 openclaw.json 配好了 key
-    // 或者我们从 process.env 里读（如果用户配了全局 env）
+    // Get config from context or use env vars/defaults.
+    // Note: api.config might not be fully parsed during register phase, recommended to fetch dynamically during tool calls.
+    // However, for the background service, we need initial config.
+    // Simplified here: assume user has set keys in openclaw.json or process.env.
     
     // ---------------------------------------------------------
-    // 1. 跨平台后台服务 (Cross-Platform Background Service)
+    // 1. Cross-Platform Background Service
     // ---------------------------------------------------------
     let syncProcess: ChildProcess | null = null;
     let isShuttingDown = false;
 
     const startSyncService = (config: any, workspaceDir: string) => {
-      if (syncProcess) return; // 已经在运行
+      if (syncProcess) return; // Already running
 
+      const embeddingConfig = config.embedding || {};
+      const ingestConfig = config.ingest || {};
+      
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
-        SILICONFLOW_API_KEY: config.embedding?.apiKey || process.env.SILICONFLOW_API_KEY || "",
-        MEMU_EMBED_BASE_URL: config.embedding?.baseUrl || "https://api.siliconflow.cn/v1",
-        MEMU_EMBED_MODEL: config.embedding?.model || "BAAI/bge-m3",
+        MEMU_EMBED_API_KEY: embeddingConfig.apiKey || process.env.MEMU_EMBED_API_KEY || "",
+        MEMU_EMBED_BASE_URL: embeddingConfig.baseUrl || "https://api.openai.com/v1",
+        MEMU_EMBED_MODEL: embeddingConfig.model || "text-embedding-3-small",
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
-        // 自动推断 session 目录：通常在 workspace 同级的 agents/main/sessions
-        // 但这里我们假设标准目录结构
+        MEMU_EXTRA_PATHS: JSON.stringify(ingestConfig.extraPaths || []),
+        // Auto-infer session dir: usually at workspace sibling agents/main/sessions
+        // Assuming standard directory structure here
         OPENCLAW_SESSIONS_DIR: path.join(process.env.HOME || "", ".openclaw/agents/main/sessions")
       };
 
@@ -40,14 +43,14 @@ const memuEnginePlugin = {
       
       console.log(`[memU] Starting background sync service: ${scriptPath}`);
       
-      // 使用 uv run 启动
+      // Launch using uv run
       syncProcess = spawn("uv", ["run", "--project", pythonRoot, "python", scriptPath], {
         cwd: pythonRoot,
         env,
-        stdio: "pipe" // 捕获日志
+        stdio: "pipe" // Capture logs
       });
 
-      // 日志重定向到 Gateway 控制台 (带前缀)
+      // Redirect logs to Gateway console (with prefix)
       syncProcess.stdout?.on("data", (d) => {
         const lines = d.toString().trim().split("\n");
         lines.forEach((l: string) => console.log(`[memU Sync] ${l}`));
@@ -63,30 +66,38 @@ const memuEnginePlugin = {
       });
     };
 
-    // 利用一个空的 "init" 工具或者 hook 来触发服务启动
-    // OpenClaw 目前没有显式的 onStart hook 暴露给插件，
-    // 但我们可以利用 registerService (如果有) 或者懒加载机制。
-    // 这里我们用一个立即执行的副作用，但需要获取 config。
-    // 权衡之下，我们在 register 阶段无法获得完整的 workspaceDir，
-    // 所以我们把启动逻辑绑定到第一次工具调用，或者等待 OpenClaw 的初始化信号。
+    // Use an empty "init" tool or hook to trigger service start.
+    // OpenClaw doesn't expose explicit onStart hook to plugins yet.
+    // We use lazy loading on first tool call or internal hook.
     
-    // *改进*：我们注册一个内部 hook，或者在第一次 memory_search 时懒加载启动。
-    // 为了稳健，我们先用懒加载模式。
+    // Improvement: register an internal hook or lazy load on first memory_search.
+    // Using lazy load pattern for robustness.
     
     // ---------------------------------------------------------
-    // 2. 工具注册 (Tools)
+    // 2. Register Tools
     // ---------------------------------------------------------
     
     const runPython = async (scriptName: string, args: string[], config: any, workspaceDir: string): Promise<string> => {
-      // ** 关键点：在这里触发后台服务 (懒加载单例) **
+      // Key point: Trigger background service here (lazy singleton)
       startSyncService(config, workspaceDir);
 
+      const embeddingConfig = config.embedding || {};
+      const extractionConfig = config.extraction || {};
+      
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
-        SILICONFLOW_API_KEY: config.embedding?.apiKey || "",
-        MEMU_EMBED_BASE_URL: config.embedding?.baseUrl || "https://api.siliconflow.cn/v1",
-        MEMU_EMBED_MODEL: config.embedding?.model || "BAAI/bge-m3",
+        
+        MEMU_EMBED_PROVIDER: embeddingConfig.provider || "openai",
+        MEMU_EMBED_API_KEY: embeddingConfig.apiKey || "",
+        MEMU_EMBED_BASE_URL: embeddingConfig.baseUrl || "https://api.openai.com/v1",
+        MEMU_EMBED_MODEL: embeddingConfig.model || "text-embedding-3-small",
+        
+        MEMU_CHAT_PROVIDER: extractionConfig.provider || "openai",
+        MEMU_CHAT_API_KEY: extractionConfig.apiKey || "",
+        MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "",
+        MEMU_CHAT_MODEL: extractionConfig.model || "",
+
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
       };
 
@@ -117,6 +128,7 @@ const memuEnginePlugin = {
 
     const searchSchema = {
       type: "object",
+      additionalProperties: false,
       properties: { query: { type: "string" }, maxResults: { type: "number" }, minScore: { type: "number" } },
       required: ["query"]
     };
@@ -141,6 +153,7 @@ const memuEnginePlugin = {
 
     const getSchema = {
       type: "object",
+      additionalProperties: false,
       properties: { path: { type: "string", description: "Path to the memory file or memU resource URL." } },
       required: ["path"]
     };

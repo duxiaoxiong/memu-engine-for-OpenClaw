@@ -47,19 +47,21 @@ def _env(name: str, default: str | None = None) -> str | None:
 
 
 def build_service() -> MemoryService:
-    # Chat LLM (internal gateway)
+    # Chat LLM (Extraction)
+    chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")
     chat_config = LLMConfig(
-        provider="openai",
+        provider=chat_provider,
         base_url=_env("MEMU_CHAT_BASE_URL", "http://192.168.31.109:8317/v1"),
         api_key=_env("MEMU_CHAT_API_KEY", "your-api-key-1"),
         chat_model=_env("MEMU_CHAT_MODEL", "gemini-3-flash-preview"),
     )
 
-    # Embedding (SiliconFlow)
+    # Embedding (Generic OpenAI Compatible)
+    embed_provider = _env("MEMU_EMBED_PROVIDER", "openai")
     embed_config = LLMConfig(
-        provider="openai",
+        provider=embed_provider,
         base_url=_env("MEMU_EMBED_BASE_URL", "https://api.siliconflow.cn/v1"),
-        api_key=_env("SILICONFLOW_API_KEY", ""),
+        api_key=_env("MEMU_EMBED_API_KEY", ""),
         embed_model=_env("MEMU_EMBED_MODEL", "BAAI/bge-m3"),
     )
 

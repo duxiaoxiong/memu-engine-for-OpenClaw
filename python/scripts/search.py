@@ -19,7 +19,7 @@ def _env(name: str, default: str | None = None) -> str | None:
     return default
 
 def get_db_dsn() -> str:
-    # 优先使用环境变量传入的 Data Dir
+    # Prefer Data Dir from environment variables
     data_dir = os.getenv("MEMU_DATA_DIR")
     if data_dir:
         os.makedirs(data_dir, exist_ok=True)
@@ -28,16 +28,18 @@ def get_db_dsn() -> str:
     return "sqlite:////home/xiaoxiong/.openclaw/workspace/memU/data/memu.db"
 
 async def search(query_text: str, user_id: str = "xiaoxiong"):
+    chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")
     chat_config = LLMConfig(
-        provider="openai",
+        provider=chat_provider,
         base_url=_env("MEMU_CHAT_BASE_URL", "http://192.168.31.109:8317/v1"),
         api_key=_env("MEMU_CHAT_API_KEY", "your-api-key-1"),
         chat_model=_env("MEMU_CHAT_MODEL", "gemini-3-flash-preview"),
     )
+    embed_provider = _env("MEMU_EMBED_PROVIDER", "openai")
     embed_config = LLMConfig(
-        provider="openai",
+        provider=embed_provider,
         base_url=_env("MEMU_EMBED_BASE_URL", "https://api.siliconflow.cn/v1"),
-        api_key=_env("SILICONFLOW_API_KEY", ""),
+        api_key=_env("MEMU_EMBED_API_KEY", ""),
         embed_model=_env("MEMU_EMBED_MODEL", "BAAI/bge-m3"),
     )
     db_config = DatabaseConfig(
@@ -83,8 +85,8 @@ if __name__ == "__main__":
                 mtype = i.get("memory_type")
                 summary = i.get("summary")
                 res_url = i.get("resource_url")
-                # 构造一个 memory_get 可用的路径标识
-                # 如果是文件路径，保持原样；如果是 ID，加上前缀
+                # Construct a valid path for memory_get
+                # Keep as-is if file path; add prefix if ID
                 source_path = res_url
                 if res_url and not res_url.startswith("/") and not res_url.startswith("."):
                     source_path = f"memu://{res_url}"
