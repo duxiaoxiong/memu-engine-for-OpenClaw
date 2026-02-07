@@ -30,20 +30,10 @@ so the memory database can answer questions with citations to real files.
 If you are using OpenClaw as an agent that can operate your machine, you can usually just tell it to read
 this README and install the extension.
 
-Suggested message to OpenClaw (edit the repo URL):
+Suggested message to OpenClaw:
 
 ```text
-Please install the OpenClaw plugin `memu-engine` from https://github.com/<you>/<repo>.
-
-Steps:
-1) Clone the repo.
-2) Copy it to ~/.openclaw/extensions/memu-engine.
-3) Update ~/.openclaw/openclaw.json:
-   - plugins.slots.memory = "memu-engine"
-   - plugins.entries["memu-engine"].enabled = true
-   - configure embedding + extraction models (no secrets in logs)
-4) Restart the gateway: openclaw gateway restart
-5) Verify by calling the tool memory_search once.
+Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.
 ```
 
 ### Manual install
@@ -202,9 +192,7 @@ If you previously ran an older variant that used different SQLite table names, y
 Upstream MemU ships a Rust-backed Python extension (`memu._core`). This repository currently vendors the
 package under `python/src/memu/`.
 
-If you plan to publish this plugin for broad use (macOS/Windows/Linux), you will need a distribution
-strategy for that native module (for example: build from upstream via maturin during installation, or
-depend on upstream wheels instead of vendoring).
+This integration is only tested on Linux (Ubuntu) so far.
 
 ## Verify
 
@@ -218,7 +206,9 @@ openclaw agent --message "Call the tool memory_search with query=\"test\"." --th
 If the models are configured correctly, the first call will also start the background watcher and ingest
 workspace docs.
 
-## Contributing (optional)
+## License
 
-If you plan to upstream this to OpenClaw, keeping the patch surface small (see `python/UPSTREAM.md`) makes
-review much easier.
+This project is released under the Apache License 2.0.
+
+- See `LICENSE`
+- See `NOTICE`

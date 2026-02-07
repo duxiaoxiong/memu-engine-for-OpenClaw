@@ -26,20 +26,10 @@
 
 如果你使用的 OpenClaw Agent 具备操作本机的能力，通常直接让它阅读本 README 并按步骤安装即可。
 
-可以发给 OpenClaw 的提示词（请替换仓库地址）：
+可以发给 OpenClaw 的提示词：
 
 ```text
-请从 https://github.com/<you>/<repo> 安装 OpenClaw 插件 `memu-engine`。
-
-步骤：
-1) git clone 该仓库。
-2) 复制到 ~/.openclaw/extensions/memu-engine。
-3) 修改 ~/.openclaw/openclaw.json：
-   - plugins.slots.memory = "memu-engine"
-   - plugins.entries["memu-engine"].enabled = true
-   - 配置 embedding + extraction 的模型参数（不要把真实密钥写进日志）
-4) 重启网关：openclaw gateway restart
-5) 调用一次 memory_search 验证。
+请从 https://github.com/duxiaoxiong/memu-engine-for-OpenClaw 安装 OpenClaw 插件 `memu-engine`。
 ```
 
 ### 手动安装
@@ -188,16 +178,12 @@ MemU 核心代码被 vendoring 到 `python/src/memu/`。
 - `python/UPSTREAM.md` 记录了上游版本与本项目的补丁列表。
 - `update_from_upstream.sh` 是一个同步脚本（尽力而为；同步后建议手动 review）。
 
-如果你之前跑过使用不同 SQLite 表名的旧版本，可能需要删除 `~/.openclaw/workspace/memU/data/memu.db`
-让它重新创建。
 
 ## 可移植性说明（原生扩展）
 
 MemU 上游包含一个 Rust 编写的 Python 原生扩展（`memu._core`）。本仓库目前将 MemU 代码 vendoring
-到 `python/src/memu/`。
+到 `python/src/memu/`。作者仅在linux（Ubuntu）进行了测试。
 
-如果你计划把插件发布给更多平台（macOS/Windows/Linux），需要提前考虑这个原生模块的分发策略（例如：
-安装时用 maturin 从上游构建，或者直接依赖上游的 wheel，而不是 vendoring）。
 
 ## 验证
 
@@ -210,6 +196,9 @@ openclaw agent --message "Call the tool memory_search with query=\"test\"." --th
 
 如果模型参数配置正确，第一次调用也会拉起后台 watcher 并开始录入工作区文档。
 
-## 贡献（可选）
+## 许可证
 
-如果你计划把它贡献给 OpenClaw，上游审查通常更喜欢补丁面尽量小（可参考 `python/UPSTREAM.md`）。
+本项目采用 Apache License 2.0 发布。
+
+- 见 `LICENSE`
+- 见 `NOTICE`

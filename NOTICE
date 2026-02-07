@@ -1,0 +1,10 @@
+memu-engine for OpenClaw
+
+Copyright 2026 memu-engine contributors
+
+This project vendors the upstream MemU project (Copyright 2024 MemU Team)
+in `python/src/memu/`.
+
+Upstream: https://github.com/NevaMind-AI/MemU
+License: Apache License 2.0
+Patch notes: python/UPSTREAM.md
