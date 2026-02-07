@@ -38,16 +38,16 @@ async def main():
     chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")
     chat_config = LLMConfig(
         provider=chat_provider,
-        base_url=_env("MEMU_CHAT_BASE_URL", "http://192.168.31.109:8317/v1"),
-        api_key=_env("MEMU_CHAT_API_KEY", "your-api-key-1"),
-        chat_model=_env("MEMU_CHAT_MODEL", "gemini-3-flash-preview"),
+        base_url=_env("MEMU_CHAT_BASE_URL", "https://api.openai.com/v1"),
+        api_key=_env("MEMU_CHAT_API_KEY", ""),
+        chat_model=_env("MEMU_CHAT_MODEL", "gpt-4o-mini"),
     )
     embed_provider = _env("MEMU_EMBED_PROVIDER", "openai")
     embed_config = LLMConfig(
         provider=embed_provider,
-        base_url=_env("MEMU_EMBED_BASE_URL", "https://api.siliconflow.cn/v1"),
+        base_url=_env("MEMU_EMBED_BASE_URL", "https://api.openai.com/v1"),
         api_key=_env("MEMU_EMBED_API_KEY", ""),
-        embed_model=_env("MEMU_EMBED_MODEL", "BAAI/bge-m3"),
+        embed_model=_env("MEMU_EMBED_MODEL", "text-embedding-3-small"),
     )
 
     db_config = DatabaseConfig(
