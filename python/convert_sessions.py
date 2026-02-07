@@ -3,9 +3,16 @@ import os
 import glob
 from typing import Any
 
-# Use env var for flexibility, fallback to hardcoded dev path
-SESSION_GLOB = os.path.join(os.getenv("OPENCLAW_SESSIONS_DIR", "/home/xiaoxiong/.openclaw/agents/main/sessions"), "*.jsonl")
-OUT_DIR = os.path.join(os.getenv("MEMU_DATA_DIR", "/home/xiaoxiong/.openclaw/workspace/memU/data"), "conversations")
+# Use env var for flexibility, no default fallback to avoid writing to wrong place
+sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
+if not sessions_dir:
+    raise ValueError("OPENCLAW_SESSIONS_DIR env var is not set")
+SESSION_GLOB = os.path.join(sessions_dir, "*.jsonl")
+
+memu_data_dir = os.getenv("MEMU_DATA_DIR")
+if not memu_data_dir:
+    raise ValueError("MEMU_DATA_DIR env var is not set")
+OUT_DIR = os.path.join(memu_data_dir, "conversations")
 
 
 def _extract_text_parts(content_list: list[dict[str, Any]]) -> str:

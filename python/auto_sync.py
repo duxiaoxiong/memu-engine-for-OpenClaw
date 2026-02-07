@@ -17,10 +17,14 @@ SYNC_MARKER = os.path.join(os.getenv("MEMU_DATA_DIR", "/home/xiaoxiong/.openclaw
 
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
-    if data_dir:
-        os.makedirs(data_dir, exist_ok=True)
-        return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
-    return "sqlite:////home/xiaoxiong/.openclaw/workspace/memU/data/memu.db"
+    if not data_dir:
+        # Fallback for standalone dev: use local 'data' dir relative to script root
+        # Assuming script is in python/ or python/scripts/
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base, "data")
+    
+    os.makedirs(data_dir, exist_ok=True)
+    return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 def _env(name: str, default: str | None = None) -> str | None:
     # Try actual environment first

@@ -6,7 +6,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 # Configuration paths
-SESSIONS_DIR = os.getenv("OPENCLAW_SESSIONS_DIR", "/home/xiaoxiong/.openclaw/agents/main/sessions")
+SESSIONS_DIR = os.getenv("OPENCLAW_SESSIONS_DIR")
 MEMU_DIR = os.path.dirname(os.path.abspath(__file__)) 
 LOCK_FILE = "/tmp/memu_sync.lock"
 
@@ -56,14 +56,14 @@ if __name__ == "__main__":
     observer = Observer()
     
     # 1. Watch Sessions
-    if os.path.exists(SESSIONS_DIR):
+    if SESSIONS_DIR and os.path.exists(SESSIONS_DIR):
         print(f"Watching sessions: {SESSIONS_DIR}")
         session_handler = SyncHandler("auto_sync.py", [".jsonl"])
         observer.schedule(session_handler, SESSIONS_DIR, recursive=False)
         # Trigger initial sync
         session_handler.trigger_sync()
     else:
-        print(f"Warning: Session dir {SESSIONS_DIR} not found.")
+        print(f"Warning: Session dir {SESSIONS_DIR} not found or not set.")
 
     # 2. Watch Docs (Extra Paths)
     extra_paths = get_extra_paths()

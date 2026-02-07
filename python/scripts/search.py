@@ -19,13 +19,14 @@ def _env(name: str, default: str | None = None) -> str | None:
     return default
 
 def get_db_dsn() -> str:
-    # Prefer Data Dir from environment variables
     data_dir = os.getenv("MEMU_DATA_DIR")
-    if data_dir:
-        os.makedirs(data_dir, exist_ok=True)
-        return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
-    # Fallback to hardcoded dev path
-    return "sqlite:////home/xiaoxiong/.openclaw/workspace/memU/data/memu.db"
+    if not data_dir:
+        # Fallback for standalone dev: use local 'data' dir
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        data_dir = os.path.join(base, "data")
+    
+    os.makedirs(data_dir, exist_ok=True)
+    return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 async def search(query_text: str, user_id: str = "xiaoxiong"):
     chat_provider = _env("MEMU_CHAT_PROVIDER", "openai")

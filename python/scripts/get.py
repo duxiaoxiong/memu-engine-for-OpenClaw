@@ -6,13 +6,14 @@ from memu.app.service import MemoryService
 from memu.app.settings import DatabaseConfig, LLMConfig, MetadataStoreConfig
 
 def get_db_dsn() -> str:
-    # Prefer Data Dir from environment variables
     data_dir = os.getenv("MEMU_DATA_DIR")
-    if data_dir:
-        os.makedirs(data_dir, exist_ok=True)
-        return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
-    # Fallback to hardcoded dev path
-    return "sqlite:////home/xiaoxiong/.openclaw/workspace/memU/data/memu.db"
+    if not data_dir:
+        # Fallback for standalone dev: use local 'data' dir
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        data_dir = os.path.join(base, "data")
+    
+    os.makedirs(data_dir, exist_ok=True)
+    return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 async def get_resource(path_or_id: str):
     # Handle memu:// prefix
