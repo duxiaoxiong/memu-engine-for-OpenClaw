@@ -1,8 +1,27 @@
 import asyncio
 import os
+import sys
 import time
+from datetime import datetime
 
 from memu.app.service import MemoryService
+
+
+def _log(msg: str) -> None:
+    """Log to both stdout and log file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line, flush=True)
+
+    log_dir = os.getenv("MEMU_DATA_DIR", os.path.dirname(__file__))
+    log_file = os.path.join(log_dir, "sync.log")
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
 from memu.app.settings import (
     CustomPrompt,
     DatabaseConfig,
@@ -171,7 +190,7 @@ async def sync_once(user_id: str = "default") -> None:
     converted_paths = convert(since_ts=last_sync)
 
     if not converted_paths:
-        print("[memU auto_sync] no updated sessions to ingest.")
+        _log("no updated sessions to ingest.")
         _write_last_sync(now_ts)
         return
 
@@ -185,7 +204,7 @@ async def sync_once(user_id: str = "default") -> None:
 
     for p in converted_paths:
         try:
-            print(f"[memU auto_sync] ingest: {p}", flush=True)
+            _log(f"ingest: {os.path.basename(p)}")
             await asyncio.wait_for(
                 service.memorize(
                     resource_url=p, modality="conversation", user={"user_id": user_id}
@@ -194,13 +213,15 @@ async def sync_once(user_id: str = "default") -> None:
             )
             ok += 1
         except asyncio.TimeoutError:
-            print(f"[memU auto_sync] TIMEOUT ingest {p} after {timeout_s}s", flush=True)
+            _log(
+                f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s) - consider using a faster model"
+            )
             fail += 1
         except Exception as e:
-            print(f"[memU auto_sync] FAILED ingest {p}: {e}", flush=True)
+            _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
             fail += 1
 
-    print(f"[memU auto_sync] done. ok={ok} fail={fail}")
+    _log(f"sync complete. success={ok}, failed={fail}")
     _write_last_sync(now_ts)
 
 
