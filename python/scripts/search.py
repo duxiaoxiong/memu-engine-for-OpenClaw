@@ -35,7 +35,7 @@ def get_db_dsn() -> str:
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 
-async def search(query_text: str, user_id: str = "xiaoxiong"):
+async def search(query_text: str, user_id: str = "default"):
     user_id = _env("MEMU_USER_ID", user_id) or user_id
     chat_kwargs = {}
     if p := _env("MEMU_CHAT_PROVIDER"):
