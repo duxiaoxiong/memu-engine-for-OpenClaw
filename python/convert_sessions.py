@@ -14,6 +14,22 @@ if not memu_data_dir:
     raise ValueError("MEMU_DATA_DIR env var is not set")
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
 
+# Language instruction prefix for memory extraction
+LANGUAGE_INSTRUCTIONS = {
+    "zh": "[Language Context: This conversation is in Chinese. All memory summaries extracted from this conversation must be written in Chinese (中文).]",
+    "en": "[Language Context: This conversation is in English. All memory summaries extracted from this conversation must be written in English.]",
+    "ja": "[Language Context: This conversation is in Japanese. All memory summaries extracted from this conversation must be written in Japanese (日本語).]",
+}
+
+
+def _get_language_prefix() -> str | None:
+    lang = os.getenv("MEMU_OUTPUT_LANG", "auto")
+    if lang == "auto" or not lang:
+        return None
+    if lang in LANGUAGE_INSTRUCTIONS:
+        return LANGUAGE_INSTRUCTIONS[lang]
+    return f"[Language Context: All memory summaries extracted from this conversation must be written in {lang}.]"
+
 
 def _extract_text_parts(content_list: list[dict[str, Any]]) -> str:
     parts: list[str] = []
@@ -66,6 +82,9 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             continue
 
         if messages:
+            lang_prefix = _get_language_prefix()
+            if lang_prefix:
+                messages.insert(0, {"role": "system", "content": lang_prefix})
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(messages, f, indent=2, ensure_ascii=False)
             converted.append(output_path)

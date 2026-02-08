@@ -8,6 +8,11 @@
     "properties": {
       "embedding": { "type": "object" },
       "extraction": { "type": "object" },
+      "language": {
+        "type": "string",
+        "default": "auto",
+        "description": "Output language for memory summaries. Options: 'auto' (follow input), 'zh' (Chinese), 'en' (English), or any language name."
+      },
       "ingest": {
         "type": "object",
         "properties": {

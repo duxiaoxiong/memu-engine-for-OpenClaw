@@ -97,7 +97,8 @@ openclaw gateway restart
             "baseUrl": "https://api.openai.com/v1",
             "apiKey": "sk-...",
             "model": "gpt-4o-mini"
-          }
+          },
+          "language": "zh"
         }
       }
     }
@@ -107,8 +108,31 @@ openclaw gateway restart
 
 可选：
 
+- `language`: 记忆摘要的输出语言（`zh`、`en`、`ja`）。不设置则使用默认行为（英文）。
 - `ingest.extraPaths`: 额外录入的 Markdown 目录/文件列表
 - `MEMU_USER_ID`: 覆盖默认 user id（默认：`default`）
+
+### 输出语言
+
+默认情况下，MemU 会用英文提取记忆摘要。对于中文用户，可以设置 `language` 为 `zh`：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "language": "zh",
+          "embedding": { ... },
+          "extraction": { ... }
+        }
+      }
+    }
+  }
+}
+```
+
+支持的语言：`zh`（中文）、`en`（英文）、`ja`（日文）。
 
 ### 录入额外 Markdown（文档）
 

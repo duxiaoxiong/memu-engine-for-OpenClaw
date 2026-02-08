@@ -1,14 +1,15 @@
 import asyncio
 import os
 import time
-from typing import Any
 
 from memu.app.service import MemoryService
 from memu.app.settings import (
+    CustomPrompt,
     DatabaseConfig,
     LLMConfig,
     MemorizeConfig,
     MetadataStoreConfig,
+    PromptBlock,
 )
 
 from convert_sessions import convert
@@ -64,8 +65,53 @@ def _env(name: str, default: str | None = None) -> str | None:
     return default
 
 
+LANGUAGE_PROMPTS = {
+    "zh": """
+## Language Override (CRITICAL - MUST FOLLOW)
+- ALL output MUST be in Chinese (中文), regardless of example language.
+- Use "用户" instead of "the user" or "User".
+- The examples in this prompt are in English for reference only.
+- You MUST write all memory content in Chinese.
+""",
+    "en": """
+## Language Override
+- ALL output MUST be in English.
+- Use "the user" to refer to the user.
+""",
+    "ja": """
+## Language Override (重要)
+- ALL output MUST be in Japanese (日本語).
+- Use "ユーザー" instead of "the user".
+""",
+}
+
+
+def _build_language_aware_memorize_config(lang: str | None) -> MemorizeConfig:
+    memory_types = ["profile", "event", "knowledge", "behavior", "skill", "tool"]
+
+    base_config = {
+        "memory_types": memory_types,
+        "enable_item_references": True,
+        "enable_item_reinforcement": True,
+    }
+
+    if not lang or lang not in LANGUAGE_PROMPTS:
+        return MemorizeConfig(**base_config)
+
+    lang_prompt = LANGUAGE_PROMPTS[lang]
+    lang_block = PromptBlock(ordinal=35, prompt=lang_prompt)
+
+    type_prompts = {}
+    for mt in memory_types:
+        type_prompts[mt] = CustomPrompt(root={"language": lang_block})
+
+    return MemorizeConfig(
+        **base_config,
+        memory_type_prompts=type_prompts,
+    )
+
+
 def build_service() -> MemoryService:
-    # Chat LLM (Extraction)
     chat_kwargs = {}
     if p := _env("MEMU_CHAT_PROVIDER"):
         chat_kwargs["provider"] = p
@@ -77,7 +123,6 @@ def build_service() -> MemoryService:
         chat_kwargs["chat_model"] = m
     chat_config = LLMConfig(**chat_kwargs)
 
-    # Embedding
     embed_kwargs = {}
     if p := _env("MEMU_EMBED_PROVIDER"):
         embed_kwargs["provider"] = p
@@ -93,12 +138,8 @@ def build_service() -> MemoryService:
         metadata_store=MetadataStoreConfig(provider="sqlite", dsn=get_db_dsn())
     )
 
-    # Key change: include knowledge/skill/tool so technical discussions become retrievable.
-    memorize_config = MemorizeConfig(
-        memory_types=["profile", "event", "knowledge", "behavior", "skill", "tool"],
-        enable_item_references=True,
-        enable_item_reinforcement=True,
-    )
+    output_lang = _env("MEMU_OUTPUT_LANG", "")
+    memorize_config = _build_language_aware_memorize_config(output_lang)
 
     return MemoryService(
         llm_profiles={"default": chat_config, "embedding": embed_config},

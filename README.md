@@ -102,7 +102,8 @@ Example (no real keys):
             "baseUrl": "https://api.openai.com/v1",
             "apiKey": "sk-...",
             "model": "gpt-4o-mini"
-          }
+          },
+          "language": "zh"
         }
       }
     }
@@ -112,8 +113,31 @@ Example (no real keys):
 
 Optional:
 
+- `language`: output language for memory summaries (`zh`, `en`, `ja`). If not set, uses the default behavior (English).
 - `ingest.extraPaths`: list of directories/files to ingest Markdown from.
 - `MEMU_USER_ID`: override the default user id (default: `default`).
+
+### Output Language
+
+By default, MemU extracts memory summaries in English. For Chinese users, set `language` to `zh`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "language": "zh",
+          "embedding": { ... },
+          "extraction": { ... }
+        }
+      }
+    }
+  }
+}
+```
+
+Supported languages: `zh` (Chinese), `en` (English), `ja` (Japanese).
 
 ### Import extra Markdown (docs)
 
