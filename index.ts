@@ -87,6 +87,7 @@ const memuEnginePlugin = {
         MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
 
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
+        MEMU_WORKSPACE_DIR: workspaceDir,
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
         // Auto-infer session dir: usually at workspace sibling agents/main/sessions
