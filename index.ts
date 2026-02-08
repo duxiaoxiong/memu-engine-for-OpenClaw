@@ -192,9 +192,11 @@ const memuEnginePlugin = {
     const getSchema = {
       type: "object",
       properties: {
-        path: { type: "string", description: "Path to the memory file or memU resource URL." }
+        path: { type: "string", description: "Path to the memory file or memU resource URL." },
+        offset: { type: "integer", description: "Start line (0-based). Only for file paths." },
+        limit: { type: "integer", description: "Number of lines to read. Only for file paths." },
       },
-      required: ["path"]
+      required: ["path"],
     };
 
     api.registerTool(
@@ -228,7 +230,11 @@ const memuEnginePlugin = {
           description,
           parameters: getSchema,
           async execute(_toolCallId: string, params: unknown) {
-            const { path: memoryPath } = params as { path?: string };
+            const { path: memoryPath, offset, limit } = params as {
+              path?: string;
+              offset?: number;
+              limit?: number;
+            };
             if (!memoryPath) {
               return {
                 content: [{ type: "text", text: "Missing required parameter: path" }],
@@ -236,7 +242,15 @@ const memuEnginePlugin = {
               };
             }
 
-            const result = await runPython("get.py", [memoryPath], pluginConfig, workspaceDir);
+            const args: string[] = [memoryPath];
+            if (typeof offset === "number" && Number.isFinite(offset)) {
+              args.push("--offset", String(Math.trunc(offset)));
+            }
+            if (typeof limit === "number" && Number.isFinite(limit)) {
+              args.push("--limit", String(Math.trunc(limit)));
+            }
+
+            const result = await runPython("get.py", args, pluginConfig, workspaceDir);
             return {
               content: [{ type: "text", text: result }],
               details: { path: memoryPath },
