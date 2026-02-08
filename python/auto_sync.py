@@ -184,14 +184,18 @@ def _write_last_sync(ts: float) -> None:
 
 async def sync_once(user_id: str = "default") -> None:
     last_sync = _read_last_sync()
-    now_ts = time.time()
+    sync_start_ts = time.time()
+
+    _log(f"sync start. since_ts={last_sync}")
 
     # 1) Convert updated OpenClaw session jsonl -> memU JSON resources
     converted_paths = convert(since_ts=last_sync)
 
+    _log(f"converted_paths: {len(converted_paths)}")
+
     if not converted_paths:
         _log("no updated sessions to ingest.")
-        _write_last_sync(now_ts)
+        _write_last_sync(sync_start_ts)
         return
 
     # 2) Ingest converted conversations into memU
@@ -204,7 +208,9 @@ async def sync_once(user_id: str = "default") -> None:
 
     for p in converted_paths:
         try:
-            _log(f"ingest: {os.path.basename(p)}")
+            base = os.path.basename(p)
+            t0 = time.time()
+            _log(f"ingest: {base}")
             await asyncio.wait_for(
                 service.memorize(
                     resource_url=p, modality="conversation", user={"user_id": user_id}
@@ -212,17 +218,19 @@ async def sync_once(user_id: str = "default") -> None:
                 timeout=timeout_s,
             )
             ok += 1
+            _log(f"done: {base} ({time.time() - t0:.1f}s)")
         except asyncio.TimeoutError:
-            _log(
-                f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s) - consider using a faster model"
-            )
+            _log(f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s)")
             fail += 1
         except Exception as e:
             _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
             fail += 1
 
     _log(f"sync complete. success={ok}, failed={fail}")
-    _write_last_sync(now_ts)
+    if fail == 0:
+        _write_last_sync(sync_start_ts)
+    else:
+        _log("sync cursor not advanced due to failures")
 
 
 if __name__ == "__main__":

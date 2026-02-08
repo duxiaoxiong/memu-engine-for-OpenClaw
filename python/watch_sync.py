@@ -91,10 +91,10 @@ class SyncHandler(FileSystemEventHandler):
         if lock_fd is None:
             return
         try:
+            self.last_run = time.time()
             env = os.environ.copy()
             script_path = os.path.join(MEMU_DIR, self.script_name)
             subprocess.run([sys.executable, script_path], cwd=MEMU_DIR, env=env)
-            self.last_run = time.time()
         except Exception as e:
             print(f"Failed to trigger {self.script_name}: {e}")
         finally:
@@ -102,6 +102,13 @@ class SyncHandler(FileSystemEventHandler):
 
 
 if __name__ == "__main__":
+    # Ensure only one watcher instance runs at a time.
+    watcher_lock_name = f"{LOCK_FILE}_watch_sync"
+    watcher_lock_fd = _try_acquire_lock(watcher_lock_name)
+    if watcher_lock_fd is None:
+        print("Another memU watcher is already running. Exiting.")
+        raise SystemExit(0)
+
     observer = Observer()
 
     # 1. Watch Sessions
@@ -148,4 +155,6 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
+    finally:
+        _release_lock(watcher_lock_name, watcher_lock_fd)
     observer.join()

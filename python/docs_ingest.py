@@ -1,12 +1,15 @@
 import asyncio
 import os
 import json
+from datetime import datetime
 from memu.app.service import MemoryService
 from memu.app.settings import (
+    CustomPrompt,
     DatabaseConfig,
     LLMConfig,
     MemorizeConfig,
     MetadataStoreConfig,
+    PromptBlock,
 )
 
 
@@ -15,6 +18,62 @@ def _env(name: str, default: str | None = None) -> str | None:
     if v is not None and str(v).strip():
         return v
     return default
+
+
+def _log(msg: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    print(line, flush=True)
+    data_dir = os.getenv("MEMU_DATA_DIR")
+    if not data_dir:
+        return
+    try:
+        with open(os.path.join(data_dir, "sync.log"), "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+LANGUAGE_PROMPTS = {
+    "zh": """
+## Language Override (CRITICAL - MUST FOLLOW)
+- ALL output MUST be in Chinese (中文), regardless of example language.
+- Use \"用户\" instead of \"the user\" or \"User\".
+- The examples in this prompt are in English for reference only.
+- You MUST write all memory content in Chinese.
+""",
+    "en": """
+## Language Override
+- ALL output MUST be in English.
+- Use \"the user\" to refer to the user.
+""",
+    "ja": """
+## Language Override (重要)
+- ALL output MUST be in Japanese (日本語).
+- Use \"ユーザー\" instead of \"the user\".
+""",
+}
+
+
+def _build_language_aware_memorize_config(lang: str | None) -> MemorizeConfig:
+    memory_types = ["profile", "event", "knowledge", "behavior", "skill", "tool"]
+    base_config = {
+        "memory_types": memory_types,
+        "enable_item_references": True,
+        "enable_item_reinforcement": True,
+    }
+    if not lang or lang not in LANGUAGE_PROMPTS:
+        return MemorizeConfig(**base_config)
+
+    lang_block = PromptBlock(ordinal=35, prompt=LANGUAGE_PROMPTS[lang])
+    type_prompts: dict[str, str | CustomPrompt] = {}
+    for mt in memory_types:
+        type_prompts[mt] = CustomPrompt(root={"language": lang_block})
+
+    return MemorizeConfig(
+        **base_config,
+        memory_type_prompts=type_prompts,
+    )
 
 
 def get_db_dsn() -> str:
@@ -70,11 +129,8 @@ async def main():
         )
     )
 
-    memorize_config = MemorizeConfig(
-        memory_types=["profile", "event", "knowledge", "behavior", "skill", "tool"],
-        enable_item_references=True,
-        enable_item_reinforcement=True,
-    )
+    output_lang = _env("MEMU_OUTPUT_LANG", "")
+    memorize_config = _build_language_aware_memorize_config(output_lang)
 
     service = MemoryService(
         llm_profiles={"default": chat_config, "embedding": embed_config},
@@ -97,7 +153,7 @@ async def main():
                         files_to_ingest.append(os.path.join(root, f))
 
     if not files_to_ingest:
-        print("[memU docs_ingest] No markdown files found in extraPaths.", flush=True)
+        _log("docs_ingest: no markdown files found in extraPaths")
         return
 
     print(
@@ -111,7 +167,7 @@ async def main():
     fail = 0
 
     for file_path in files_to_ingest:
-        print(f"[memU docs_ingest] Ingesting: {file_path}", flush=True)
+        _log(f"docs_ingest ingest: {file_path}")
         try:
             await asyncio.wait_for(
                 service.memorize(
@@ -123,10 +179,10 @@ async def main():
             )
             ok += 1
         except Exception as e:
-            print(f"[memU docs_ingest] FAILED {file_path}: {e}", flush=True)
+            _log(f"docs_ingest failed: {file_path}: {type(e).__name__}: {e}")
             fail += 1
 
-    print(f"[memU docs_ingest] Completed. ok={ok} fail={fail}", flush=True)
+    _log(f"docs_ingest complete. ok={ok} fail={fail}")
 
 
 if __name__ == "__main__":
