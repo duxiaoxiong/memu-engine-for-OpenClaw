@@ -69,7 +69,9 @@ async def search(query_text: str, user_id: str = "xiaoxiong"):
     retr_config = RetrieveConfig(
         route_intention=False,
         item=RetrieveItemConfig(enabled=True, top_k=8),
-        category=RetrieveCategoryConfig(enabled=True, top_k=5),
+        category=RetrieveCategoryConfig(
+            enabled=True, top_k=2
+        ),  # Reduced for conciseness
         resource=RetrieveResourceConfig(enabled=True, top_k=3),
     )
 
@@ -94,54 +96,46 @@ if __name__ == "__main__":
     query = sys.argv[1]
     try:
         res = asyncio.run(search(query))
-        
-        # 1. Collect all unique sources from items, categories, and resources
-        sources = set()
+
         items = res.get("items", [])
         cats = res.get("categories", [])
         resources = res.get("resources", [])
 
+        # Build resource_id -> url lookup
+        resource_url_map = {r.get("id"): r.get("url") for r in resources}
+
         def format_source(url):
-            if not url: return None
+            if not url:
+                return None
             if not url.startswith("/") and not url.startswith("."):
                 return f"memu://{url}"
             return url
 
-        for i in items:
-            if url := i.get("resource_url"):
-                if s := format_source(url): sources.add(s)
-        
-        for r in resources:
-            if url := r.get("url"):
-                if s := format_source(url): sources.add(s)
+        def get_item_source(item):
+            resource_id = item.get("resource_id")
+            return resource_url_map.get(resource_id) if resource_id else None
 
-        # 2. Print Header
-        print(f"--- [memU Retrieval System] ---")
-        
-        # 3. Print Category Summaries (Primary Insight)
+        # 1. Print Header
+        print("--- [memU Retrieval System] ---")
+
+        # 2. Print Category Summaries (Primary Insight)
         if cats:
             print(f"--- Category Summaries for: {query} ---")
             for c in cats:
-                name = c.get('name', 'General')
-                summary = c.get('summary', '')
+                name = c.get("name", "General")
+                summary = c.get("summary", "")
                 print(f"- Category [{name}]: {summary}")
-        
-        # 4. Print Atomic Items (Detailed Evidence)
+
+        # 3. Print Atomic Items (Detailed Evidence)
         if items:
             print(f"\n--- Detailed Memories for: {query} ---")
             for i in items:
                 mtype = i.get("memory_type", "fact")
                 summary = i.get("summary", "")
-                url = i.get("resource_url")
+                url = get_item_source(i)
                 source_part = f" (Source: {format_source(url)})" if url else ""
                 print(f"- [{mtype}]: {summary}{source_part}")
 
-        # 5. Print Global Sources Footer (Critical for traceability)
-        if sources:
-            print(f"\n--- Sources ---")
-            for s in sorted(list(sources)):
-                print(f"- {s}")
-        
         if not items and not cats:
             print("No relevant memories found in database.")
 
