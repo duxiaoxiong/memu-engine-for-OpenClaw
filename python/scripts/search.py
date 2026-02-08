@@ -104,12 +104,28 @@ if __name__ == "__main__":
         # Build resource_id -> url lookup
         resource_url_map = {r.get("id"): r.get("url") for r in resources}
 
+        workspace_dir = _env(
+            "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
+        )
+
+        def to_relative_path(abs_path: str) -> str:
+            """Convert absolute path to workspace-relative path (like OpenClaw official)."""
+            if not abs_path or not abs_path.startswith("/"):
+                return abs_path
+            try:
+                rel = os.path.relpath(abs_path, workspace_dir)
+                if rel.startswith(".."):
+                    return abs_path
+                return rel
+            except ValueError:
+                return abs_path
+
         def format_source(url):
             if not url:
                 return None
             if not url.startswith("/") and not url.startswith("."):
                 return f"memu://{url}"
-            return url
+            return to_relative_path(url)
 
         def get_item_source(item):
             resource_id = item.get("resource_id")
