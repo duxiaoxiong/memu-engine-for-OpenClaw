@@ -48,9 +48,21 @@ async def get_resource(path_or_id: str):
             target = res
             break
 
-    if target and target.local_path and os.path.exists(target.local_path):
-        with open(target.local_path, "r", encoding="utf-8") as f:
-            return f.read()
+    if target and target.local_path:
+        local_path = target.local_path
+        candidates: list[str] = []
+        if os.path.isabs(local_path):
+            candidates.append(local_path)
+        else:
+            data_dir = os.getenv("MEMU_DATA_DIR")
+            if data_dir:
+                candidates.append(os.path.join(data_dir, local_path))
+            candidates.append(local_path)
+
+        for p in candidates:
+            if p and os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    return f.read()
 
     # Fallback: treat input as physical path if not found/empty
     if os.path.exists(path_or_id):
