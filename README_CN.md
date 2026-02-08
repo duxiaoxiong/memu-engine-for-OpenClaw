@@ -126,7 +126,7 @@ openclaw gateway restart
 }
 ```
 
-> ⚠️ **重要提示**：`extraction.model` 建议使用**非思考模型**（如 `gpt-4o-mini`、`gemini-2.0-flash`、`glm-4-flash`）。思考模型（如 `o1`、`gemini-3-flash-preview`）每次调用的 token 开销很大，MemU 的多步骤工作流可能会超时失败。
+> ⚠️ **注意**：如果 extraction 模型响应太慢，同步过程可能会超时并静默失败。
 
 可选：
 
