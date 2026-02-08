@@ -45,6 +45,8 @@ def _extract_text_parts(content_list: list[dict[str, Any]]) -> str:
 def convert(*, since_ts: float | None = None) -> list[str]:
     os.makedirs(OUT_DIR, exist_ok=True)
 
+    max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
+
     session_files = glob.glob(SESSION_GLOB)
     converted: list[str] = []
 
@@ -83,11 +85,27 @@ def convert(*, since_ts: float | None = None) -> list[str]:
 
         if messages:
             lang_prefix = _get_language_prefix()
-            if lang_prefix:
-                messages.insert(0, {"role": "system", "content": lang_prefix})
-            with open(output_path, "w", encoding="utf-8") as f:
-                json.dump(messages, f, indent=2, ensure_ascii=False)
-            converted.append(output_path)
+
+            def _write_part(part_messages: list[dict[str, str]], out_path: str) -> None:
+                if lang_prefix:
+                    part_messages = [
+                        {"role": "system", "content": lang_prefix},
+                        *part_messages,
+                    ]
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump(part_messages, f, indent=2, ensure_ascii=False)
+
+            if max_messages > 0 and len(messages) > max_messages:
+                for idx in range(0, len(messages), max_messages):
+                    part_idx = idx // max_messages
+                    part_path = os.path.join(
+                        OUT_DIR, f"{session_id}.part{part_idx:03d}.json"
+                    )
+                    _write_part(messages[idx : idx + max_messages], part_path)
+                    converted.append(part_path)
+            else:
+                _write_part(messages, output_path)
+                converted.append(output_path)
 
     return converted
 
