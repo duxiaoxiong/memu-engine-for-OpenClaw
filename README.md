@@ -132,6 +132,8 @@ Example (no real keys):
 }
 ```
 
+> ⚠️ **Important**: For `extraction.model`, use a **non-reasoning model** (e.g., `gpt-4o-mini`, `gemini-2.0-flash`, `glm-4-flash`). Reasoning models (e.g., `o1`, `gemini-3-flash-preview`) have high token overhead per call, and MemU's multi-step workflow may timeout.
+
 Optional:
 
 - `language`: output language for memory summaries (`zh`, `en`, `ja`). If not set, uses the default behavior (English).
