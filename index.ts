@@ -88,6 +88,7 @@ const memuEnginePlugin = {
 
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
+        MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
         // Auto-infer session dir: usually at workspace sibling agents/main/sessions
         // Assuming standard directory structure here
         OPENCLAW_SESSIONS_DIR: path.join(process.env.HOME || "", ".openclaw/agents/main/sessions")
@@ -158,6 +159,8 @@ const memuEnginePlugin = {
         MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
 
         MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
+        MEMU_WORKSPACE_DIR: workspaceDir,
+        MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
       };
 
       return new Promise((resolve) => {

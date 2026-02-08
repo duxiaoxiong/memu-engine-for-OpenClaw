@@ -5,6 +5,10 @@ Links:
 - OpenClaw: https://github.com/openclaw/openclaw
 - MemU (upstream): https://github.com/NevaMind-AI/MemU
 
+Language:
+
+- [Chinese](README_CN.md)
+
 ## What this is
 
 `memu-engine` is a community OpenClaw memory plugin that wires OpenClaw sessions into the MemU engine.
@@ -33,7 +37,7 @@ this README and install the extension.
 Suggested message to OpenClaw:
 
 ```text
-Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.
+Please install the OpenClaw plugin `memu-engine` from https://github.com/duxiaoxiong/memu-engine-for-OpenClaw
 ```
 
 ### Manual install
@@ -68,6 +72,27 @@ openclaw gateway restart
 If you restart the gateway before updating `openclaw.json`, OpenClaw may still be using the old memory
 slot and you can see confusing errors.
 
+### Initial Sync & Trigger
+
+When you first install the plugin (or reset the database), the memory database will be empty.
+The plugin uses a "lazy load" strategy:
+
+1. Restarting the Gateway **does NOT** immediately start the sync process.
+2. The first time you (or the AI) interact with the plugin (e.g., send a message, call `memory_search`), the background sync service will start.
+3. On startup, it detects if the database is empty or if there are new sessions, and triggers a **full historical sync**.
+
+So after installation, just say "Hello" to your agent to kick off the initial build.
+
+### Real-time Sync
+
+Once running, the background service watches for changes:
+
+- **Sessions**: Syncs new messages from `~/.openclaw/sessions/*.jsonl` in real-time.
+- **Docs**: Watches configured markdown paths.
+- **Debounce**: Changes are processed with a 5-second debounce to avoid churning on rapid writes.
+- **Efficiency**: Only files with modified timestamps are processed. If no files changed, no LLM calls are made.
+- **Locking**: Uses a file lock to prevent multiple processes from syncing simultaneously (stale lock expiry: 15 mins).
+
 ## Configure
 
 In `~/.openclaw/openclaw.json`, assign the memory slot and provide model settings.
@@ -98,7 +123,8 @@ Example (no real keys):
             "baseUrl": "https://api.openai.com/v1",
             "apiKey": "sk-...",
             "model": "gpt-4o-mini"
-          }
+          },
+          "language": "zh"
         }
       }
     }
@@ -106,10 +132,35 @@ Example (no real keys):
 }
 ```
 
+> ⚠️ **Note**: If the extraction model is too slow, the sync process may timeout and fail silently.
+
 Optional:
 
+- `language`: output language for memory summaries (`zh`, `en`, `ja`). If not set, uses the default behavior (English).
 - `ingest.extraPaths`: list of directories/files to ingest Markdown from.
 - `MEMU_USER_ID`: override the default user id (default: `default`).
+
+### Output Language
+
+By default, MemU extracts memory summaries in English. For Chinese users, set `language` to `zh`:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "language": "zh",
+          "embedding": { ... },
+          "extraction": { ... }
+        }
+      }
+    }
+  }
+}
+```
+
+Supported languages: `zh` (Chinese), `en` (English), `ja` (Japanese).
 
 ### Import extra Markdown (docs)
 

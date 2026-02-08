@@ -69,7 +69,9 @@ async def search(query_text: str, user_id: str = "xiaoxiong"):
     retr_config = RetrieveConfig(
         route_intention=False,
         item=RetrieveItemConfig(enabled=True, top_k=8),
-        category=RetrieveCategoryConfig(enabled=True, top_k=5),
+        category=RetrieveCategoryConfig(
+            enabled=True, top_k=2
+        ),  # Reduced for conciseness
         resource=RetrieveResourceConfig(enabled=True, top_k=3),
     )
 
@@ -94,32 +96,64 @@ if __name__ == "__main__":
     query = sys.argv[1]
     try:
         res = asyncio.run(search(query))
-        items = res.get("items", [])
-        if items:
-            print(f"--- Results for: {query} ---")
-            for i in items:
-                mtype = i.get("memory_type")
-                summary = i.get("summary")
-                res_url = i.get("resource_url")
-                # Construct a valid path for memory_get
-                # Keep as-is if file path; add prefix if ID
-                source_path = res_url
-                if (
-                    res_url
-                    and not res_url.startswith("/")
-                    and not res_url.startswith(".")
-                ):
-                    source_path = f"memu://{res_url}"
 
-                source_part = f" [Source: {source_path}]" if source_path else ""
+        items = res.get("items", [])
+        cats = res.get("categories", [])
+        resources = res.get("resources", [])
+
+        # Build resource_id -> url lookup
+        resource_url_map = {r.get("id"): r.get("url") for r in resources}
+
+        workspace_dir = _env(
+            "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
+        )
+
+        def to_relative_path(abs_path: str) -> str:
+            """Convert absolute path to workspace-relative path (like OpenClaw official)."""
+            if not abs_path or not abs_path.startswith("/"):
+                return abs_path
+            try:
+                rel = os.path.relpath(abs_path, workspace_dir)
+                if rel.startswith(".."):
+                    return abs_path
+                return rel
+            except ValueError:
+                return abs_path
+
+        def format_source(url):
+            if not url:
+                return None
+            if not url.startswith("/") and not url.startswith("."):
+                return f"memu://{url}"
+            return to_relative_path(url)
+
+        def get_item_source(item):
+            resource_id = item.get("resource_id")
+            return resource_url_map.get(resource_id) if resource_id else None
+
+        # 1. Print Header
+        print("--- [memU Retrieval System] ---")
+
+        # 2. Print Category Summaries (Primary Insight)
+        if cats:
+            print(f"--- Category Summaries for: {query} ---")
+            for c in cats:
+                name = c.get("name", "General")
+                summary = c.get("summary", "")
+                print(f"- Category [{name}]: {summary}")
+
+        # 3. Print Atomic Items (Detailed Evidence)
+        if items:
+            print(f"\n--- Detailed Memories for: {query} ---")
+            for i in items:
+                mtype = i.get("memory_type", "fact")
+                summary = i.get("summary", "")
+                url = get_item_source(i)
+                source_part = f" (Source: {format_source(url)})" if url else ""
                 print(f"- [{mtype}]: {summary}{source_part}")
-        else:
-            cats = res.get("categories", [])
-            if cats:
-                print(f"--- Category Summaries for: {query} ---")
-                for c in cats:
-                    print(f"- Category [{c.get('name')}]: {c.get('summary')}")
-            else:
-                print("No relevant memories found in database.")
+
+        if not items and not cats:
+            print("No relevant memories found in database.")
+
     except Exception as e:
         print(f"Search failed: {e}")

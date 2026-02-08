@@ -5,6 +5,10 @@
 - OpenClaw: https://github.com/openclaw/openclaw
 - MemU（上游）: https://github.com/NevaMind-AI/MemU
 
+语言：
+
+- [English](README.md)
+
 ## 这是什么
 
 `memu-engine` 是一个社区维护的 OpenClaw 记忆插件，用来把 OpenClaw 的会话日志接入 MemU。
@@ -63,6 +67,26 @@ openclaw gateway restart
 如果你在修改 `openclaw.json` 之前就重启，OpenClaw 可能仍在使用旧的 memory slot，从而出现一些看起来
 不相关的报错。
 
+### 首次同步触发机制
+
+当你初次安装（或重置数据库）后，记忆库是空的。插件采用"懒加载"策略：
+
+1. 重启 Gateway **不会** 立即启动同步进程。
+2. 当你（或 AI）第一次与插件交互（例如发送消息、调用 `memory_search`）时，后台同步服务才会启动。
+3. 服务启动时，如果发现数据库为空或有新会话，会立即触发 **全量历史同步**。
+
+因此，安装完成后，只需对你的 Agent 说句 "你好"，即可触发首次构建。
+
+### 实时同步机制
+
+后台服务启动后，会持续监听变化：
+
+- **会话同步**：实时监听 `~/.openclaw/sessions/*.jsonl` 的新消息。
+- **文档同步**：监听配置的 Markdown 文档路径。
+- **防抖 (Debounce)**：变更处理有 5 秒的防抖时间，避免频繁触发。
+- **高效处理**：仅处理时间戳发生变化的文件。如果文件未修改，不会调用 LLM。
+- **进程锁**：使用文件锁防止多个进程同时同步（锁过期时间：15分钟）。
+
 ## 配置
 
 在 `~/.openclaw/openclaw.json` 中绑定 memory slot，并填写模型参数。
@@ -93,7 +117,8 @@ openclaw gateway restart
             "baseUrl": "https://api.openai.com/v1",
             "apiKey": "sk-...",
             "model": "gpt-4o-mini"
-          }
+          },
+          "language": "zh"
         }
       }
     }
@@ -101,10 +126,35 @@ openclaw gateway restart
 }
 ```
 
+> ⚠️ **注意**：如果 extraction 模型响应太慢，同步过程可能会超时并静默失败。
+
 可选：
 
+- `language`: 记忆摘要的输出语言（`zh`、`en`、`ja`）。不设置则使用默认行为（英文）。
 - `ingest.extraPaths`: 额外录入的 Markdown 目录/文件列表
 - `MEMU_USER_ID`: 覆盖默认 user id（默认：`default`）
+
+### 输出语言
+
+默认情况下，MemU 会用英文提取记忆摘要。对于中文用户，可以设置 `language` 为 `zh`：
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "memu-engine": {
+        "config": {
+          "language": "zh",
+          "embedding": { ... },
+          "extraction": { ... }
+        }
+      }
+    }
+  }
+}
+```
+
+支持的语言：`zh`（中文）、`en`（英文）、`ja`（日文）。
 
 ### 录入额外 Markdown（文档）
 
