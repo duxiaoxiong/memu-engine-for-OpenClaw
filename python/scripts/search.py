@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import sys
 
 from memu.app.service import MemoryService
@@ -103,6 +104,32 @@ if __name__ == "__main__":
 
         # Build resource_id -> url lookup
         resource_url_map = {r.get("id"): r.get("url") for r in resources}
+
+        # Ensure we can resolve sources even when `resources` top_k doesn't include the item's resource.
+        # (MemU retrieve can return items without returning their resource objects.)
+        item_resource_ids = {
+            i.get("resource_id")
+            for i in items
+            if isinstance(i, dict) and i.get("resource_id")
+        }
+        missing_ids = [rid for rid in item_resource_ids if rid not in resource_url_map]
+        if missing_ids:
+            try:
+                data_dir = os.getenv("MEMU_DATA_DIR")
+                if data_dir:
+                    db_path = os.path.join(data_dir, "memu.db")
+                    conn = sqlite3.connect(db_path)
+                    cur = conn.cursor()
+                    placeholders = ",".join(["?"] * len(missing_ids))
+                    cur.execute(
+                        f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders})",
+                        missing_ids,
+                    )
+                    for rid, url in cur.fetchall():
+                        resource_url_map[rid] = url
+                    conn.close()
+            except Exception:
+                pass
 
         workspace_dir = _env(
             "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
