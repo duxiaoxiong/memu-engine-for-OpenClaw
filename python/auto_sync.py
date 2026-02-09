@@ -3,36 +3,60 @@ import os
 import sys
 import time
 from datetime import datetime
+import json
 
 from memu.app.service import MemoryService
 
 import sqlite3
 
-def resource_exists(url: str, user_id: str) -> bool:
+
+def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall() if len(row) > 1]
+        return column in set(cols)
+    except Exception:
+        return False
+
+
+def resource_exists(resource_url: str, user_id: str) -> bool:
     try:
         dsn = get_db_dsn()
         # dsn is sqlite:///path/to/db
         db_path = dsn.replace("sqlite:///", "")
         if not os.path.exists(db_path):
             return False
-        
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
         # Check if table exists first
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memu_resources'")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memu_resources'"
+        )
         if not cursor.fetchone():
             conn.close()
             return False
-            
-        cursor.execute("SELECT 1 FROM memu_resources WHERE url = ?", (url,))
+
+        # NOTE: Keep the dedupe key consistent with what Memorize stores:
+        # memorize(resource_url=...) ultimately creates Resource(url=resource_url).
+        if _db_has_column(conn, table="memu_resources", column="user_id"):
+            cursor.execute(
+                "SELECT 1 FROM memu_resources WHERE url = ? AND user_id = ? LIMIT 1",
+                (resource_url, user_id),
+            )
+        else:
+            cursor.execute(
+                "SELECT 1 FROM memu_resources WHERE url = ? LIMIT 1",
+                (resource_url,),
+            )
         exists = cursor.fetchone() is not None
         conn.close()
         return exists
     except Exception as e:
         _log(f"DB check failed: {e}")
         return False
-
 
 
 def _log(msg: str) -> None:
@@ -74,6 +98,31 @@ def _get_data_dir() -> str:
 
 def _get_sync_marker_path() -> str:
     return os.path.join(_get_data_dir(), "last_sync_ts")
+
+
+def _get_pending_ingest_path() -> str:
+    return os.path.join(_get_data_dir(), "pending_ingest.json")
+
+
+def _load_pending_ingest() -> list[str]:
+    try:
+        with open(_get_pending_ingest_path(), "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        paths = payload.get("paths") if isinstance(payload, dict) else None
+        if isinstance(paths, list):
+            return [p for p in paths if isinstance(p, str) and p.strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _save_pending_ingest(paths: list[str]) -> None:
+    marker = _get_pending_ingest_path()
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    tmp = marker + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "paths": paths}, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, marker)
 
 
 def get_db_dsn() -> str:
@@ -216,12 +265,30 @@ async def sync_once(user_id: str = "default") -> None:
 
     _log(f"sync start. since_ts={last_sync}")
 
+    # Load any previously converted-but-not-ingested parts.
+    # This prevents data loss when convert() advances its internal state.json
+    # but downstream memorize() fails mid-batch.
+    pending_paths = _load_pending_ingest()
+
     # 1) Convert updated OpenClaw session jsonl -> memU JSON resources
     converted_paths = convert(since_ts=last_sync)
 
-    _log(f"converted_paths: {len(converted_paths)}")
+    # Merge (preserve order) and persist pending queue BEFORE ingest.
+    merged: list[str] = []
+    seen: set[str] = set()
+    for p in [*pending_paths, *converted_paths]:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        if p in seen:
+            continue
+        seen.add(p)
+        merged.append(p)
+    _save_pending_ingest(merged)
 
-    if not converted_paths:
+    _log(f"converted_paths: {len(converted_paths)}")
+    _log(f"pending_paths: {len(merged)}")
+
+    if not merged:
         _log("no updated sessions to ingest.")
         _write_last_sync(sync_start_ts)
         return
@@ -234,9 +301,10 @@ async def sync_once(user_id: str = "default") -> None:
 
     timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
 
-    for p in converted_paths:
+    remaining: list[str] = []
+    for p in merged:
         # Check if resource already exists to skip re-ingestion
-        if resource_exists(os.path.basename(p), user_id):
+        if resource_exists(p, user_id):
             _log(f"skip existing: {os.path.basename(p)}")
             continue
 
@@ -255,11 +323,17 @@ async def sync_once(user_id: str = "default") -> None:
         except asyncio.TimeoutError:
             _log(f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s)")
             fail += 1
+            remaining.append(p)
         except Exception as e:
             _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
             fail += 1
+            remaining.append(p)
 
     _log(f"sync complete. success={ok}, failed={fail}")
+
+    # Persist remaining queue and advance cursor only when everything is ingested.
+    _save_pending_ingest(remaining)
+
     if fail == 0:
         _write_last_sync(sync_start_ts)
     else:
@@ -267,4 +341,5 @@ async def sync_once(user_id: str = "default") -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(sync_once())
+    user_id = _env("MEMU_USER_ID", "default") or "default"
+    asyncio.run(sync_once(user_id=user_id))

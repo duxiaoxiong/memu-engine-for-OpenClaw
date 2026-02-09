@@ -1,16 +1,17 @@
 import glob
 import re
 
-SESSION_FILENAME_RE = re.compile(r"^(.+?)\.jsonl(?:\.deleted\.\d{4}-\d{2}-\d{2}T[\d:\-]+(?:\.\d+)?Z?)?$")
+SESSION_FILENAME_RE = re.compile(
+    r"^(.+?)\.jsonl(?:\.deleted\.\d{4}-\d{2}-\d{2}T[\d:\-]+(?:\.\d+)?Z?)?$"
+)
 
 # UUID pattern to identify main sessions (vs sub-agent sessions with custom labels)
 UUID_PATTERN = re.compile(
-    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-    re.IGNORECASE
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
 )
 
 # Pattern to extract timestamp from .deleted filename for chronological sorting
-DELETED_TIMESTAMP_RE = re.compile(r'\.deleted\.(\d{4}-\d{2}-\d{2}T[\d\-:.]+Z?)$')
+DELETED_TIMESTAMP_RE = re.compile(r"\.deleted\.(\d{4}-\d{2}-\d{2}T[\d\-:.]+Z?)$")
 
 import hashlib
 import json
@@ -22,15 +23,15 @@ from typing import Any
 sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
 if not sessions_dir:
     raise ValueError("OPENCLAW_SESSIONS_DIR env var is not set")
+sessions_dir = str(sessions_dir)
 SESSION_GLOB = os.path.join(sessions_dir, "*.jsonl")
 DELETED_GLOB = os.path.join(sessions_dir, "*.jsonl.deleted.*")
 
 memu_data_dir = os.getenv("MEMU_DATA_DIR")
 if not memu_data_dir:
     raise ValueError("MEMU_DATA_DIR env var is not set")
+memu_data_dir = str(memu_data_dir)
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
-STATE_FILE = os.path.join(OUT_DIR, "state.json")
-
 STATE_PATH = os.path.join(OUT_DIR, "state.json")
 STATE_VERSION = 1
 
@@ -46,7 +47,10 @@ LANGUAGE_INSTRUCTIONS = {
 
 
 def _get_language_prefix() -> str | None:
-    lang = os.getenv("MEMU_OUTPUT_LANG", "auto")
+    # Backward/Doc-compatible: allow MEMU_LANGUAGE as alias.
+    lang = os.getenv("MEMU_OUTPUT_LANG")
+    if lang is None or not str(lang).strip():
+        lang = os.getenv("MEMU_LANGUAGE", "auto")
     if lang == "auto" or not lang:
         return None
     if lang in LANGUAGE_INSTRUCTIONS:
@@ -71,7 +75,6 @@ def _sha256_bytes(data: bytes) -> str:
     return h.hexdigest()
 
 
-
 def _extract_session_id(filename: str) -> str | None:
     """Extract session_id from filename, handling both .jsonl and .deleted variants."""
     m = SESSION_FILENAME_RE.match(filename)
@@ -80,7 +83,7 @@ def _extract_session_id(filename: str) -> str | None:
 
 def _is_main_session(session_id: str) -> bool:
     """Check if session_id is a main session (UUID format) vs sub-agent session (custom label).
-    
+
     Main sessions use UUID format (e.g., '75fcef11-456c-42d9-beaf-4caa7c5d3eab').
     Sub-agent sessions use custom labels (e.g., 'verify-prepush', 'my-task-1').
     """
@@ -89,7 +92,7 @@ def _is_main_session(session_id: str) -> bool:
 
 def _extract_deleted_timestamp(filename: str) -> str:
     """Extract timestamp from .deleted filename for chronological sorting.
-    
+
     Returns empty string if no timestamp found (will sort to beginning).
     """
     m = DELETED_TIMESTAMP_RE.search(filename)
@@ -98,10 +101,10 @@ def _extract_deleted_timestamp(filename: str) -> str:
 
 def _get_session_start_time(file_path: str) -> str:
     """Extract session start timestamp from the first line of a session file.
-    
+
     Session files start with a header like:
     {"type":"session","version":3,"id":"...","timestamp":"2026-02-06T15:10:50.886Z",...}
-    
+
     Returns the timestamp string for sorting, or empty string if not found.
     """
     try:
@@ -127,10 +130,10 @@ def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
 
 
 def _load_state() -> dict[str, Any]:
-    if not os.path.exists(STATE_FILE):
+    if not os.path.exists(STATE_PATH):
         return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
             s = json.load(f)
         if s.get("version") != STATE_VERSION:
             return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
@@ -138,9 +141,14 @@ def _load_state() -> dict[str, Any]:
         processed_deleted = s.get("processed_deleted", [])
         if not isinstance(processed_deleted, list):
             processed_deleted = []
-        return {"version": STATE_VERSION, "sessions": sessions, "processed_deleted": processed_deleted}
+        return {
+            "version": STATE_VERSION,
+            "sessions": sessions,
+            "processed_deleted": processed_deleted,
+        }
     except Exception:
         return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
+
 
 def _save_state(state: dict[str, Any]) -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -269,13 +277,13 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
-    
+
     # Check if sub-agent sessions should be synced (default: only main sessions)
     sync_sub_sessions = os.getenv("MEMU_SYNC_SUB_SESSIONS", "false").lower() == "true"
 
     state = _load_state()
     sessions_state: dict[str, Any] = state.setdefault("sessions", {})
-    
+
     converted: list[str] = []
 
     # ==========================================================================
@@ -283,7 +291,7 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     # This ensures older sessions update summaries before newer ones.
     # ==========================================================================
     processed_deleted: set[str] = set(state.get("processed_deleted", []))
-    
+
     # Prune old entries occasionally
     if len(processed_deleted) > 1000:
         existing_deleted = set()
@@ -293,7 +301,7 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         processed_deleted = existing_deleted
 
     deleted_files = glob.glob(DELETED_GLOB)
-    
+
     # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
     if not sync_sub_sessions:
         filtered_deleted = []
@@ -302,12 +310,14 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             if sid and _is_main_session(sid):
                 filtered_deleted.append(fp)
         deleted_files = filtered_deleted
-    
+
     # Sort by session start time (oldest first) - from session header
     deleted_files.sort(key=lambda p: _get_session_start_time(p))
-    
+
     # Helper function for writing parts
-    def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
+    def _write_deleted_part(
+        part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None
+    ) -> None:
         if lang_prefix:
             part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
         with open(out_path, "w", encoding="utf-8") as f:
@@ -315,69 +325,85 @@ def convert(*, since_ts: float | None = None) -> list[str]:
 
     for file_path in deleted_files:
         filename = os.path.basename(file_path)
-        
+
         # Skip if already processed (deleted files are immutable)
         if filename in processed_deleted:
             continue
-        
+
         session_id = _extract_session_id(filename)
         if not session_id:
             continue
-        
+
         # Get existing state or start fresh (for sessions deleted before first sync)
         prev = sessions_state.get(session_id)
         if not isinstance(prev, dict):
             prev = {}  # No prior state - treat as new, read from beginning
-        
+
         prev_offset = int(prev.get("last_offset", 0) or 0)
-        
+
         try:
             st = os.stat(file_path)
             cur_size = int(st.st_size)
         except FileNotFoundError:
             processed_deleted.add(filename)
             continue
-        
+
         # If deleted file is smaller than or equal to last offset, no new data
         if cur_size <= prev_offset:
             processed_deleted.add(filename)
             continue
-        
+
         # Read from last known offset to end, with error handling
         try:
-            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
+            read_res = _read_messages_from_jsonl(
+                file_path=file_path, start_offset=prev_offset
+            )
             new_messages = read_res.messages
         except Exception as e:
             # Log error and skip corrupted file
             import sys
-            print(f"[convert_sessions] Error reading deleted file {filename}: {e}", file=sys.stderr)
+
+            print(
+                f"[convert_sessions] Error reading deleted file {filename}: {e}",
+                file=sys.stderr,
+            )
             processed_deleted.add(filename)
             continue
-        
+
         if new_messages:
             # Generate new parts for the tail content
             lang_prefix = _get_language_prefix()
-            
+
             # Use part_count to determine next part index (prevents overwriting)
             next_part_idx = int(prev.get("part_count", 0))
-            
+
             # Write new parts
             if max_messages > 0:
                 for idx in range(0, len(new_messages), max_messages):
-                    part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
-                    _write_deleted_part(new_messages[idx : idx + max_messages], part_path, lang_prefix)
+                    part_path = os.path.join(
+                        OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json"
+                    )
+                    _write_deleted_part(
+                        new_messages[idx : idx + max_messages], part_path, lang_prefix
+                    )
                     converted.append(part_path)
                     next_part_idx += 1
             else:
-                part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
+                part_path = os.path.join(
+                    OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json"
+                )
                 _write_deleted_part(new_messages, part_path, lang_prefix)
                 converted.append(part_path)
                 next_part_idx += 1
-            
+
             # Log progress for debugging
             import sys
-            print(f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)", file=sys.stderr)
-        
+
+            print(
+                f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)",
+                file=sys.stderr,
+            )
+
         processed_deleted.add(filename)
 
     state["processed_deleted"] = list(processed_deleted)
@@ -386,10 +412,10 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     # PHASE 2: Process active .jsonl files (current/ongoing sessions)
     # These are processed AFTER deleted files, so newer data updates last.
     # ==========================================================================
-    
+
     # Get all active session files and filter/sort them
     session_files = glob.glob(SESSION_GLOB)
-    
+
     # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
     if not sync_sub_sessions:
         filtered_files = []
@@ -398,7 +424,7 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             if sid and _is_main_session(sid):
                 filtered_files.append(fp)
         session_files = filtered_files
-    
+
     # Sort by session start time (oldest first) to ensure chronological processing
     session_files.sort(key=lambda p: _get_session_start_time(p))
 
@@ -658,7 +684,6 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             "head_sha256": head_sha,
             "tail_sha256": tail_sha,
         }
-
 
     _save_state(state)
     return converted
