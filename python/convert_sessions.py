@@ -510,11 +510,10 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         if not session_id:
             continue
         
-        # Only process if we have existing state for this session
+        # Get existing state or start fresh (for sessions deleted before first sync)
         prev = sessions_state.get(session_id)
         if not isinstance(prev, dict):
-            processed_deleted.add(filename)
-            continue
+            prev = {}  # No prior state - treat as new, read from beginning
         
         prev_offset = int(prev.get("last_offset", 0) or 0)
         
