@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 const memuEnginePlugin = {
@@ -64,24 +65,85 @@ const memuEnginePlugin = {
     let syncProcess: ChildProcess | null = null;
     let isShuttingDown = false;
 
-    const startSyncService = (pluginConfig: any, workspaceDir: string) => {
-      // Ensure clean slate: kill old orphaned processes to pick up new config
-      try { 
-        require('child_process').execSync('pkill -f watch_sync.py || true');
-        require('child_process').execSync('pkill -f auto_sync.py || true');
-      } catch (e) { /* ignore */ }
+    const getUserId = (pluginConfig: any): string => {
+      const fromConfig = pluginConfig?.userId;
+      if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
+      const fromEnv = process.env.MEMU_USER_ID;
+      if (typeof fromEnv === "string" && fromEnv.trim()) return fromEnv.trim();
+      return "default";
+    };
 
+    const getSessionDir = (): string => {
+      const fromEnv = process.env.OPENCLAW_SESSIONS_DIR;
+      if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+
+      const home = process.env.HOME || "";
+      const candidates = [
+        path.join(home, ".openclaw", "agents", "main", "sessions"),
+        path.join(home, ".openclaw", "sessions"),
+      ];
+      for (const c of candidates) {
+        if (c && fs.existsSync(c)) return c;
+      }
+      return candidates[0];
+    };
+
+    const pidFilePath = (workspaceDir: string) =>
+      path.join(workspaceDir, "memU", "data", "watch_sync.pid");
+
+    const stopSyncService = (workspaceDir: string) => {
+      isShuttingDown = true;
+
+      // Best-effort: stop the in-process handle
+      if (syncProcess && syncProcess.pid) {
+        try {
+          syncProcess.kill();
+        } catch {
+          // ignore
+        }
+        syncProcess = null;
+      }
+
+      // Best-effort: stop any orphaned watcher from previous plugin instance
+      try {
+        const pidPath = pidFilePath(workspaceDir);
+        if (fs.existsSync(pidPath)) {
+          const pidStr = fs.readFileSync(pidPath, "utf-8").trim();
+          const pid = Number(pidStr);
+          if (Number.isFinite(pid) && pid > 1) {
+            try {
+              process.kill(pid);
+            } catch {
+              // ignore
+            }
+          }
+          fs.unlinkSync(pidPath);
+        }
+      } catch {
+        // ignore
+      }
+
+      isShuttingDown = false;
+
+    };
+
+    const startSyncService = (pluginConfig: any, workspaceDir: string) => {
       if (syncProcess) return; // Already running
+
+      stopSyncService(workspaceDir);
 
       const embeddingConfig = pluginConfig.embedding || {};
       const extractionConfig = pluginConfig.extraction || {};
       const ingestConfig = pluginConfig.ingest || {};
 
       const extraPaths = computeExtraPaths(pluginConfig, workspaceDir);
+      const userId = getUserId(pluginConfig);
+      const sessionDir = getSessionDir();
       
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
+        MEMU_USER_ID: userId,
         MEMU_EMBED_PROVIDER: embeddingConfig.provider || "openai",
         MEMU_EMBED_API_KEY: embeddingConfig.apiKey || process.env.MEMU_EMBED_API_KEY || "",
         MEMU_EMBED_BASE_URL: embeddingConfig.baseUrl || "https://api.openai.com/v1",
@@ -96,9 +158,7 @@ const memuEnginePlugin = {
         MEMU_WORKSPACE_DIR: workspaceDir,
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
-        // Auto-infer session dir: usually at workspace sibling agents/main/sessions
-        // Assuming standard directory structure here
-        OPENCLAW_SESSIONS_DIR: path.join(process.env.HOME || "", ".openclaw/agents/main/sessions")
+        OPENCLAW_SESSIONS_DIR: sessionDir,
       };
 
       const scriptPath = path.join(pythonRoot, "watch_sync.py");
@@ -106,21 +166,42 @@ const memuEnginePlugin = {
       console.log(`[memU] Starting background sync service: ${scriptPath}`);
       
       // Launch using uv run
-      syncProcess = spawn("uv", ["run", "--project", pythonRoot, "python", scriptPath], {
+      const proc = spawn("uv", ["run", "--project", pythonRoot, "python", scriptPath], {
         cwd: pythonRoot,
         env,
         stdio: "pipe" // Capture logs
       });
 
+      syncProcess = proc;
+
+      isShuttingDown = false;
+
+      // Write PID file for orphan cleanup
+      try {
+        const pidPath = pidFilePath(workspaceDir);
+        fs.mkdirSync(path.dirname(pidPath), { recursive: true });
+        if (syncProcess.pid) fs.writeFileSync(pidPath, String(syncProcess.pid), "utf-8");
+      } catch {
+        // ignore
+      }
+
       // Redirect logs to Gateway console (with prefix)
-      syncProcess.stdout?.on("data", (d) => {
+      proc.stdout?.on("data", (d) => {
         const lines = d.toString().trim().split("\n");
         lines.forEach((l: string) => console.log(`[memU Sync] ${l}`));
       });
-      syncProcess.stderr?.on("data", (d) => console.error(`[memU Sync Error] ${d}`));
+      proc.stderr?.on("data", (d) => console.error(`[memU Sync Error] ${d}`));
 
-      syncProcess.on("close", (code) => {
+      proc.on("close", (code) => {
+        // Ignore stale close events from an old process instance.
+        if (syncProcess !== proc) return;
         syncProcess = null;
+        try {
+          const pidPath = pidFilePath(workspaceDir);
+          if (fs.existsSync(pidPath)) fs.unlinkSync(pidPath);
+        } catch {
+          // ignore
+        }
         if (!isShuttingDown) {
           console.warn(`[memU] Sync service crashed (code ${code}). Restarting in 5s...`);
           setTimeout(() => startSyncService(pluginConfig, workspaceDir), 5000);
@@ -150,10 +231,12 @@ const memuEnginePlugin = {
 
       const embeddingConfig = pluginConfig.embedding || {};
       const extractionConfig = pluginConfig.extraction || {};
+      const userId = getUserId(pluginConfig);
       
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
+        MEMU_USER_ID: userId,
         
         MEMU_EMBED_PROVIDER: embeddingConfig.provider || "openai",
         MEMU_EMBED_API_KEY: embeddingConfig.apiKey || "",
