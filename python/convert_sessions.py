@@ -1,5 +1,7 @@
 import glob
 import re
+
+SESSION_FILENAME_RE = re.compile(r"^(.+?)\.jsonl(?:\.deleted\.\d{4}-\d{2}-\d{2}T[\d:]+(?:\.\d+)?)?$")
 import hashlib
 import json
 import os
