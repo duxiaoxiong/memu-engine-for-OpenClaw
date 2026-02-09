@@ -4,6 +4,7 @@ import os
 import json
 import tempfile
 import sys
+import signal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -27,6 +28,27 @@ def _try_acquire_lock(lock_path: str, stale_seconds: int = 15 * 60):
         return fd
     except FileExistsError:
         try:
+            # PID-aware check: if the process in the lock file is alive,
+            # treat it as held forever (mtime-based stale checks are unreliable
+            # for long-running daemons because the lock file is not touched).
+            try:
+                with open(lock_path, "r", encoding="utf-8") as f:
+                    pid_str = f.read().strip()
+                pid = int(pid_str)
+                if pid > 1:
+                    try:
+                        os.kill(pid, 0)
+                        return None
+                    except ProcessLookupError:
+                        # PID not alive; allow recovery below.
+                        pass
+                    except PermissionError:
+                        # Cannot signal it; assume it's alive.
+                        return None
+            except Exception:
+                # Fall back to mtime-based stale check.
+                pass
+
             age = time.time() - os.path.getmtime(lock_path)
             if age > stale_seconds:
                 os.remove(lock_path)
@@ -41,7 +63,10 @@ def _try_acquire_lock(lock_path: str, stale_seconds: int = 15 * 60):
 def _release_lock(lock_path: str, fd):
     try:
         if fd is not None:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     finally:
         try:
             os.remove(lock_path)
@@ -110,6 +135,17 @@ if __name__ == "__main__":
         raise SystemExit(0)
 
     observer = Observer()
+
+    def _shutdown_handler(signum, frame):
+        try:
+            observer.stop()
+        finally:
+            _release_lock(watcher_lock_name, watcher_lock_fd)
+        raise SystemExit(0)
+
+    # Ensure SIGTERM/SIGINT releases the singleton lock.
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
 
     # 1. Watch Sessions
     if SESSIONS_DIR and os.path.exists(SESSIONS_DIR):
