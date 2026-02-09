@@ -21,8 +21,7 @@ It listens to OpenClaw's session logs and workspace documents, incrementally ext
 Paste the following block and tell OpenClaw to install this plugin:
 
 ```text
-Install and configure memu-engine by following the instructions here:
-https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README_EN.md
+Install and configure memu-engine by following the instructions here: https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README_EN.md
 ```
 
 ## Manual Installation

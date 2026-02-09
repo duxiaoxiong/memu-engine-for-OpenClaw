@@ -21,8 +21,7 @@
 粘贴下面这一段并告诉openclaw来安装本插件：
 
 ```text
-Install and configure oh-my-opencode by following the instructions here:
-https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README.md
+Install and configure oh-my-opencode by following the instructions here: https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README.md
 ```
 
 ## 手动安装
