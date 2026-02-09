@@ -17,6 +17,7 @@ memu_data_dir = os.getenv("MEMU_DATA_DIR")
 if not memu_data_dir:
     raise ValueError("MEMU_DATA_DIR env var is not set")
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
+STATE_FILE = os.path.join(OUT_DIR, "state.json")
 
 STATE_PATH = os.path.join(OUT_DIR, "state.json")
 STATE_VERSION = 1
