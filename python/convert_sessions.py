@@ -96,6 +96,26 @@ def _extract_deleted_timestamp(filename: str) -> str:
     return m.group(1) if m else ""
 
 
+def _get_session_start_time(file_path: str) -> str:
+    """Extract session start timestamp from the first line of a session file.
+    
+    Session files start with a header like:
+    {"type":"session","version":3,"id":"...","timestamp":"2026-02-06T15:10:50.886Z",...}
+    
+    Returns the timestamp string for sorting, or empty string if not found.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            first_line = f.readline()
+            if first_line:
+                data = json.loads(first_line)
+                if data.get("type") == "session":
+                    return data.get("timestamp", "") or ""
+    except Exception:
+        pass
+    return ""
+
+
 def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
     """Hash a slice of the file (best-effort)."""
     try:
@@ -268,8 +288,9 @@ def convert(*, since_ts: float | None = None) -> list[str]:
                 filtered_files.append(fp)
         session_files = filtered_files
     
-    # Sort by mtime (oldest first) to ensure chronological processing
-    session_files.sort(key=lambda p: os.path.getmtime(p))
+    # Sort by session start time (oldest first) to ensure chronological processing
+    # Uses the timestamp from session header, not file mtime (which changes on copy)
+    session_files.sort(key=lambda p: _get_session_start_time(p))
     
     converted: list[str] = []
 
@@ -554,7 +575,9 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         deleted_files = filtered_deleted
     
     # Sort by timestamp in filename (oldest first) for chronological processing
-    deleted_files.sort(key=lambda p: _extract_deleted_timestamp(os.path.basename(p)))
+    # Sort by session start time (oldest first) - same as active files
+    # This uses the timestamp from session header, not the deletion timestamp in filename
+    deleted_files.sort(key=lambda p: _get_session_start_time(p))
     
     # Helper function for writing parts (defined once, not in loop)
     def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
