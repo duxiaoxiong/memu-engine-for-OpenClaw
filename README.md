@@ -50,7 +50,7 @@ openclaw gateway restart
 
 以下是完整配置示例及参数说明。建议按此结构顺序进行配置：
 
-```json
+```jsonc
 {
   "plugins": {
     "slots": { "memory": "memu-engine" },
@@ -159,7 +159,7 @@ openclaw gateway restart
 
 在 `openclaw.json` 中移除或注释掉 `memu-engine` 配置：
 
-```json
+```jsonc
 {
   "extensions": {
     // "memu-engine": { ... }  // 注释掉即可禁用

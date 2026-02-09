@@ -58,7 +58,7 @@ After restarting, just say "Call `memory_search`" to your agent. The background 
 
 Below is a complete configuration example with parameter explanations. It is recommended to configure in this order:
 
-```json
+```jsonc
 {
   "plugins": {
     "slots": { "memory": "memu-engine" },
