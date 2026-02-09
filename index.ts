@@ -127,8 +127,39 @@ const memuEnginePlugin = {
 
     };
 
+    // Best-effort: bind background watcher lifecycle to gateway process lifecycle.
+    // OpenClaw doesn't expose a formal plugin shutdown hook yet.
+    let lastWorkspaceDirForCleanup: string | null = null;
+    let shutdownHooksInstalled = false;
+    const installShutdownHooksOnce = () => {
+      if (shutdownHooksInstalled) return;
+      shutdownHooksInstalled = true;
+
+      const cleanup = () => {
+        if (!lastWorkspaceDirForCleanup) return;
+        try {
+          stopSyncService(lastWorkspaceDirForCleanup);
+        } catch {
+          // ignore
+        }
+      };
+
+      process.once("exit", cleanup);
+      process.once("SIGINT", () => {
+        cleanup();
+        process.exit(0);
+      });
+      process.once("SIGTERM", () => {
+        cleanup();
+        process.exit(0);
+      });
+    };
+
     const startSyncService = (pluginConfig: any, workspaceDir: string) => {
       if (syncProcess) return; // Already running
+
+      lastWorkspaceDirForCleanup = workspaceDir;
+      installShutdownHooksOnce();
 
       stopSyncService(workspaceDir);
 
