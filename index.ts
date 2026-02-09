@@ -88,13 +88,28 @@ const memuEnginePlugin = {
       return candidates[0];
     };
 
-    const pidFilePath = (workspaceDir: string) =>
-      path.join(workspaceDir, "memU", "data", "watch_sync.pid");
+    const getMemuDataDir = (pluginConfig: any): string => {
+      // Priority: pluginConfig.dataDir > env > default
+      const fromConfig = pluginConfig?.dataDir;
+      if (typeof fromConfig === "string" && fromConfig.trim()) {
+        const resolved = fromConfig.startsWith("~")
+          ? path.join(process.env.HOME || "", fromConfig.slice(1))
+          : fromConfig;
+        return resolved;
+      }
+      const fromEnv = process.env.MEMU_DATA_DIR;
+      if (fromEnv && fromEnv.trim()) return fromEnv;
+      // Default: ~/.openclaw/memUdata
+      const home = process.env.HOME || "";
+      return path.join(home, ".openclaw", "memUdata");
+    };
 
-    const stopSyncService = (workspaceDir: string) => {
+    const pidFilePath = (dataDir: string) =>
+      path.join(dataDir, "watch_sync.pid");
+
+    const stopSyncService = (dataDir: string) => {
       isShuttingDown = true;
 
-      // Best-effort: stop the in-process handle
       if (syncProcess && syncProcess.pid) {
         try {
           syncProcess.kill();
@@ -104,9 +119,8 @@ const memuEnginePlugin = {
         syncProcess = null;
       }
 
-      // Best-effort: stop any orphaned watcher from previous plugin instance
       try {
-        const pidPath = pidFilePath(workspaceDir);
+        const pidPath = pidFilePath(dataDir);
         if (fs.existsSync(pidPath)) {
           const pidStr = fs.readFileSync(pidPath, "utf-8").trim();
           const pid = Number(pidStr);
@@ -124,21 +138,18 @@ const memuEnginePlugin = {
       }
 
       isShuttingDown = false;
-
     };
 
-    // Best-effort: bind background watcher lifecycle to gateway process lifecycle.
-    // OpenClaw doesn't expose a formal plugin shutdown hook yet.
-    let lastWorkspaceDirForCleanup: string | null = null;
+    let lastDataDirForCleanup: string | null = null;
     let shutdownHooksInstalled = false;
     const installShutdownHooksOnce = () => {
       if (shutdownHooksInstalled) return;
       shutdownHooksInstalled = true;
 
       const cleanup = () => {
-        if (!lastWorkspaceDirForCleanup) return;
+        if (!lastDataDirForCleanup) return;
         try {
-          stopSyncService(lastWorkspaceDirForCleanup);
+          stopSyncService(lastDataDirForCleanup);
         } catch {
           // ignore
         }
@@ -158,10 +169,11 @@ const memuEnginePlugin = {
     const startSyncService = (pluginConfig: any, workspaceDir: string) => {
       if (syncProcess) return; // Already running
 
-      lastWorkspaceDirForCleanup = workspaceDir;
+      const dataDir = getMemuDataDir(pluginConfig);
+      lastDataDirForCleanup = dataDir;
       installShutdownHooksOnce();
 
-      stopSyncService(workspaceDir);
+      stopSyncService(dataDir);
 
       const embeddingConfig = pluginConfig.embedding || {};
       const extractionConfig = pluginConfig.extraction || {};
@@ -185,7 +197,7 @@ const memuEnginePlugin = {
         MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "https://api.openai.com/v1",
         MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
 
-        MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
+        MEMU_DATA_DIR: dataDir,
         MEMU_WORKSPACE_DIR: workspaceDir,
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
@@ -240,15 +252,51 @@ const memuEnginePlugin = {
       });
     };
 
-    // Use an empty "init" tool or hook to trigger service start.
+    // ---------------------------------------------------------
+    // 2. Auto-start Sync Service on Gateway Init
+    // ---------------------------------------------------------
     // OpenClaw doesn't expose explicit onStart hook to plugins yet.
-    // We use lazy loading on first tool call or internal hook.
+    // We use setImmediate to start the service after registration completes.
+    // This ensures sync starts immediately when gateway loads, not on first tool call.
     
-    // Improvement: register an internal hook or lazy load on first memory_search.
-    // Using lazy load pattern for robustness.
+    let autoStartTriggered = false;
+    const triggerAutoStart = () => {
+      if (autoStartTriggered) return;
+      autoStartTriggered = true;
+      
+      // Defer to next tick to ensure plugin is fully registered
+      setImmediate(() => {
+        try {
+          const pluginConfig = api.pluginConfig || {};
+          // Determine workspace dir from common locations
+          const home = process.env.HOME || "";
+          const workspaceCandidates = [
+            process.env.OPENCLAW_WORKSPACE_DIR,
+            path.join(home, ".openclaw", "workspace"),
+            process.cwd(),
+          ].filter(Boolean) as string[];
+          
+          let workspaceDir = workspaceCandidates[0];
+          for (const c of workspaceCandidates) {
+            if (fs.existsSync(c)) {
+              workspaceDir = c;
+              break;
+            }
+          }
+          
+          console.log(`[memU] Auto-starting sync service for workspace: ${workspaceDir}`);
+          startSyncService(pluginConfig, workspaceDir);
+        } catch (e) {
+          console.error(`[memU] Auto-start failed: ${e}`);
+        }
+      });
+    };
+    
+    // Trigger auto-start immediately
+    triggerAutoStart();
     
     // ---------------------------------------------------------
-    // 2. Register Tools
+    // 3. Register Tools
     // ---------------------------------------------------------
     
     const runPython = async (
@@ -279,7 +327,7 @@ const memuEnginePlugin = {
         MEMU_CHAT_BASE_URL: extractionConfig.baseUrl || "https://api.openai.com/v1",
         MEMU_CHAT_MODEL: extractionConfig.model || "gpt-4o-mini",
 
-        MEMU_DATA_DIR: path.join(workspaceDir, "memU", "data"),
+        MEMU_DATA_DIR: getMemuDataDir(pluginConfig),
         MEMU_WORKSPACE_DIR: workspaceDir,
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
       };

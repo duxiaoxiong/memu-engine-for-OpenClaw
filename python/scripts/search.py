@@ -151,25 +151,63 @@ if __name__ == "__main__":
         workspace_dir = _env(
             "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
         )
+        memu_data_dir = _env("MEMU_DATA_DIR", "")
 
-        def to_relative_path(abs_path: str) -> str:
-            """Convert absolute path to workspace-relative path (like OpenClaw official)."""
-            if not abs_path or not abs_path.startswith("/"):
+        extra_paths_json = _env("MEMU_EXTRA_PATHS", "[]")
+        try:
+            import json
+
+            extra_paths: list[str] = (
+                json.loads(extra_paths_json) if extra_paths_json else []
+            )
+        except Exception:
+            extra_paths = []
+
+        def shorten_path(abs_path: str) -> str:
+            """Shorten absolute paths using prefix aliases.
+
+            Conversion rules:
+            - /workspace_dir/... -> ws:...
+            - /extra_paths[i]/... -> ext{i}:...
+            - memU internal paths handled separately
+            """
+            import re
+
+            if not abs_path:
                 return abs_path
-            try:
-                rel = os.path.relpath(abs_path, workspace_dir)
-                if rel.startswith(".."):
-                    return abs_path
-                return rel
-            except ValueError:
-                return abs_path
+
+            for i, ep in enumerate(extra_paths):
+                if abs_path.startswith(ep + "/"):
+                    rel = abs_path[len(ep) + 1 :]
+                    return f"ext{i}:{rel}"
+                if abs_path == ep:
+                    return f"ext{i}:"
+
+            if workspace_dir and abs_path.startswith(workspace_dir + "/"):
+                rel = abs_path[len(workspace_dir) + 1 :]
+                return f"ws:{rel}"
+            if workspace_dir and abs_path == workspace_dir:
+                return "ws:"
+
+            # conversations/UUID.partNNN.json -> conv:UUID[:8]:pN
+            m = re.search(r"conversations/([a-f0-9-]+)\.part(\d+)\.json$", abs_path)
+            if m:
+                return f"conv:{m.group(1)[:8]}:p{int(m.group(2))}"
+            m = re.search(r"conversations/([a-f0-9-]+)\.json$", abs_path)
+            if m:
+                return f"conv:{m.group(1)[:8]}"
+
+            return abs_path
 
         def format_source(url):
             if not url:
                 return None
-            if not url.startswith("/") and not url.startswith("."):
-                return f"memu://{url}"
-            return to_relative_path(url)
+            short = shorten_path(url)
+            if short != url:
+                return f"memu://{short}"
+            if url.startswith("/"):
+                return f"memu://{shorten_path(url)}"
+            return f"memu://{url}"
 
         def get_item_source(item):
             resource_id = item.get("resource_id")

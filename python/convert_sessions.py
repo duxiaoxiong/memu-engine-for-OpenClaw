@@ -1,44 +1,40 @@
+"""
+OpenClaw Session Converter
+
+Converts OpenClaw session JSONL files to memU conversation format.
+
+Key behaviors:
+1. Only process the MAIN session (identified via sessions.json["agent:main:main"])
+2. Skip all .deleted files (they are sub-agent archives, not user conversations)
+3. Skip all other UUID sessions (they are active sub-agents)
+4. Filter out system-injected messages that look like user messages
+5. Only extract text content from user/assistant messages
+6. Clean up metadata tags and normalize formatting
+"""
+
 import glob
-import re
-
-SESSION_FILENAME_RE = re.compile(
-    r"^(.+?)\.jsonl(?:\.deleted\.\d{4}-\d{2}-\d{2}T[\d:\-]+(?:\.\d+)?Z?)?$"
-)
-
-# UUID pattern to identify main sessions (vs sub-agent sessions with custom labels)
-UUID_PATTERN = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
-)
-
-# Pattern to extract timestamp from .deleted filename for chronological sorting
-DELETED_TIMESTAMP_RE = re.compile(r"\.deleted\.(\d{4}-\d{2}-\d{2}T[\d\-:.]+Z?)$")
-
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
-# Use env var for flexibility, no default fallback to avoid writing to wrong place
-sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
-if not sessions_dir:
+_sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
+if not _sessions_dir:
     raise ValueError("OPENCLAW_SESSIONS_DIR env var is not set")
-sessions_dir = str(sessions_dir)
-SESSION_GLOB = os.path.join(sessions_dir, "*.jsonl")
-DELETED_GLOB = os.path.join(sessions_dir, "*.jsonl.deleted.*")
+sessions_dir: str = _sessions_dir
 
-memu_data_dir = os.getenv("MEMU_DATA_DIR")
-if not memu_data_dir:
+_memu_data_dir = os.getenv("MEMU_DATA_DIR")
+if not _memu_data_dir:
     raise ValueError("MEMU_DATA_DIR env var is not set")
-memu_data_dir = str(memu_data_dir)
+memu_data_dir: str = _memu_data_dir
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
 STATE_PATH = os.path.join(OUT_DIR, "state.json")
-STATE_VERSION = 1
+STATE_VERSION = 3
 
-# How many bytes to sample from head/tail to detect mid-file edits.
 SAMPLE_BYTES = 64 * 1024
 
-# Language instruction prefix for memory extraction
 LANGUAGE_INSTRUCTIONS = {
     "zh": "[Language Context: This conversation is in Chinese. All memory summaries extracted from this conversation must be written in Chinese (中文).]",
     "en": "[Language Context: This conversation is in English. All memory summaries extracted from this conversation must be written in English.]",
@@ -47,7 +43,6 @@ LANGUAGE_INSTRUCTIONS = {
 
 
 def _get_language_prefix() -> str | None:
-    # Backward/Doc-compatible: allow MEMU_LANGUAGE as alias.
     lang = os.getenv("MEMU_OUTPUT_LANG")
     if lang is None or not str(lang).strip():
         lang = os.getenv("MEMU_LANGUAGE", "auto")
@@ -58,10 +53,120 @@ def _get_language_prefix() -> str | None:
     return f"[Language Context: All memory summaries extracted from this conversation must be written in {lang}.]"
 
 
+def _get_main_session_id() -> str | None:
+    """Get the main session ID from sessions.json registry."""
+    sessions_path = os.path.join(sessions_dir, "sessions.json")
+    try:
+        with open(sessions_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        main_entry = data.get("agent:main:main", {})
+        return main_entry.get("sessionId")
+    except Exception:
+        return None
+
+
+# Regex patterns for filtering
+RE_NO_REPLY = re.compile(r"\bNO_REPLY\b\W*$")
+RE_TOOL_INVOKE = re.compile(r"^Call the tool \w+ with .*\.$")
+RE_SYSTEM_PREFIX = re.compile(r"^System:\s*\[")
+
+# Directive patterns (assistant responses to slash commands)
+DIRECTIVE_PATTERNS = [
+    r"^Model set to .+\.$",
+    r"^Model reset to default .+\.$",
+    r"^Thinking level set to .+\.$",
+    r"^Thinking disabled\.$",
+    r"^Verbose logging (enabled|disabled|set to .+)\.$",
+    r"^Reasoning (visibility|stream) (enabled|disabled)\.$",
+    r"^Elevated mode (disabled|set to .+)\.$",
+    r"^Queue mode (set to .+|reset to default)\.$",
+    r"^Queue debounce set to .+\.$",
+    r"^Auth profile set to .+\.$",
+    r"^Exec defaults set .+\.$",
+    r"^Current: .+\n\nSwitch: /model",
+]
+RE_DIRECTIVE = re.compile("|".join(DIRECTIVE_PATTERNS), re.MULTILINE | re.DOTALL)
+
+# Cleanup patterns
+RE_MESSAGE_ID = re.compile(r"\[message_id:\s*[a-f0-9-]+\]\s*", re.IGNORECASE)
+RE_TELEGRAM_FULL = re.compile(
+    r"\[Telegram\s+(?:DU\s+)?(?:id:\d+\s+)?(?:\+\d+[smhd]\s+)?(?:\d{4}-\d{2}-\d{2}\s+)?(\d{1,2}:\d{2})\s+(UTC|GMT[+-]?\d*)\]",
+    re.IGNORECASE,
+)
+RE_SYSTEM_LINE = re.compile(r"^System:\s*\[[^\]]+\][^\n]*\n+", re.MULTILINE)
+RE_COMPACTION_LINE = re.compile(r"^.*Compacted \([^)]+\).*Context [^\n]+\n*", re.MULTILINE)
+
+
+def _is_system_injected_content(text: str) -> bool:
+    """Detect system-injected messages that masquerade as user messages."""
+    if not text:
+        return False
+    text_stripped = text.strip()
+
+    if RE_NO_REPLY.search(text):
+        return True
+    if RE_SYSTEM_PREFIX.match(text_stripped):
+        return True
+    if text_stripped.startswith("This session is being continued"):
+        return True
+    if "A new session was started via /new or /reset" in text_stripped:
+        return True
+    if RE_TOOL_INVOKE.match(text_stripped):
+        return True
+
+    return False
+
+
+def _is_directive_response(text: str) -> bool:
+    """Check if assistant message is a directive acknowledgement."""
+    if not text:
+        return False
+    return bool(RE_DIRECTIVE.match(text.strip()))
+
+
+def _is_system_injected_entry(entry: dict) -> bool:
+    """Check if a JSONL entry is a system-injected message."""
+    if entry.get("type") != "message":
+        return False
+
+    if "toolUseResult" in entry:
+        return True
+    if "sourceToolUseID" in entry:
+        return True
+    if entry.get("isMeta"):
+        return True
+
+    msg = entry.get("message", {})
+    if msg.get("role") != "user":
+        return False
+
+    content_list = msg.get("content", [])
+    for part in content_list:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text", "")
+            if _is_system_injected_content(text):
+                return True
+
+    return False
+
+
+def _clean_message_text(text: str) -> str:
+    """Remove metadata tags and normalize formatting for memory storage."""
+    if not text:
+        return ""
+
+    text = RE_MESSAGE_ID.sub("", text)
+    text = RE_SYSTEM_LINE.sub("", text)
+    text = RE_COMPACTION_LINE.sub("", text)
+    text = RE_TELEGRAM_FULL.sub(r"[Telegram \1 \2]", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _extract_text_parts(content_list: list[dict[str, Any]]) -> str:
+    """Extract only plain text content, ignoring tool calls, thinking, images, etc."""
     parts: list[str] = []
     for part in content_list or []:
-        # Only keep plain text. Ignore tool calls, thinking, etc.
         if isinstance(part, dict) and part.get("type") == "text":
             t = part.get("text")
             if isinstance(t, str) and t.strip():
@@ -73,50 +178,6 @@ def _sha256_bytes(data: bytes) -> str:
     h = hashlib.sha256()
     h.update(data)
     return h.hexdigest()
-
-
-def _extract_session_id(filename: str) -> str | None:
-    """Extract session_id from filename, handling both .jsonl and .deleted variants."""
-    m = SESSION_FILENAME_RE.match(filename)
-    return m.group(1) if m else None
-
-
-def _is_main_session(session_id: str) -> bool:
-    """Check if session_id is a main session (UUID format) vs sub-agent session (custom label).
-
-    Main sessions use UUID format (e.g., '75fcef11-456c-42d9-beaf-4caa7c5d3eab').
-    Sub-agent sessions use custom labels (e.g., 'verify-prepush', 'my-task-1').
-    """
-    return bool(UUID_PATTERN.match(session_id))
-
-
-def _extract_deleted_timestamp(filename: str) -> str:
-    """Extract timestamp from .deleted filename for chronological sorting.
-
-    Returns empty string if no timestamp found (will sort to beginning).
-    """
-    m = DELETED_TIMESTAMP_RE.search(filename)
-    return m.group(1) if m else ""
-
-
-def _get_session_start_time(file_path: str) -> str:
-    """Extract session start timestamp from the first line of a session file.
-
-    Session files start with a header like:
-    {"type":"session","version":3,"id":"...","timestamp":"2026-02-06T15:10:50.886Z",...}
-
-    Returns the timestamp string for sorting, or empty string if not found.
-    """
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            first_line = f.readline()
-            if first_line:
-                data = json.loads(first_line)
-                if data.get("type") == "session":
-                    return data.get("timestamp", "") or ""
-    except Exception:
-        pass
-    return ""
 
 
 def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
@@ -131,23 +192,18 @@ def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
 
 def _load_state() -> dict[str, Any]:
     if not os.path.exists(STATE_PATH):
-        return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
+        return {"version": STATE_VERSION, "sessions": {}}
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             s = json.load(f)
         if s.get("version") != STATE_VERSION:
-            return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
-        sessions = s.get("sessions", {})
-        processed_deleted = s.get("processed_deleted", [])
-        if not isinstance(processed_deleted, list):
-            processed_deleted = []
+            return {"version": STATE_VERSION, "sessions": {}}
         return {
             "version": STATE_VERSION,
-            "sessions": sessions,
-            "processed_deleted": processed_deleted,
+            "sessions": s.get("sessions", {}),
         }
     except Exception:
-        return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
+        return {"version": STATE_VERSION, "sessions": {}}
 
 
 def _save_state(state: dict[str, Any]) -> None:
@@ -216,7 +272,6 @@ def _write_part_json(
     except FileNotFoundError:
         pass
     except Exception:
-        # If the existing file is unreadable, overwrite.
         pass
 
     with open(out_path, "wb") as f:
@@ -231,12 +286,7 @@ class _ReadResult:
 
 
 def _read_messages_from_jsonl(*, file_path: str, start_offset: int) -> _ReadResult:
-    """Read OpenClaw session JSONL from byte offset and extract user/assistant messages.
-
-    Offset advances only to the end of the last *complete* line read. If the file ends
-    with an incomplete JSON line, we do not advance past that line.
-    """
-
+    """Read OpenClaw session JSONL from byte offset and extract user/assistant messages."""
     messages: list[dict[str, str]] = []
     new_offset = start_offset
 
@@ -248,8 +298,6 @@ def _read_messages_from_jsonl(*, file_path: str, start_offset: int) -> _ReadResu
             if not line:
                 break
 
-            # If the writer is mid-line (no trailing newline) and JSON parsing fails,
-            # keep the offset pinned so we can retry next sync.
             complete_line = line.endswith(b"\n")
             try:
                 entry = json.loads(line.decode("utf-8", errors="replace"))
@@ -263,406 +311,157 @@ def _read_messages_from_jsonl(*, file_path: str, start_offset: int) -> _ReadResu
 
             if entry.get("type") != "message":
                 continue
+
+            if _is_system_injected_entry(entry):
+                continue
+
             msg_obj = entry.get("message", {})
             role = msg_obj.get("role")
+
+            if role not in ("user", "assistant"):
+                continue
+
             content_list = msg_obj.get("content", [])
             text = _extract_text_parts(content_list)
-            if text and role in ("user", "assistant"):
-                messages.append({"role": role, "content": text})
+
+            if not text:
+                continue
+
+            if role == "user" and _is_system_injected_content(text):
+                continue
+
+            if role == "assistant" and _is_directive_response(text):
+                continue
+
+            if RE_NO_REPLY.search(text):
+                continue
+
+            text = _clean_message_text(text)
+            if not text:
+                continue
+
+            messages.append({"role": role, "content": text})
 
     return _ReadResult(messages=messages, new_offset=new_offset)
 
 
 def convert(*, since_ts: float | None = None) -> list[str]:
+    """Convert the main OpenClaw session to memU conversation format."""
     os.makedirs(OUT_DIR, exist_ok=True)
 
     max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
 
-    # Check if sub-agent sessions should be synced (default: only main sessions)
-    sync_sub_sessions = os.getenv("MEMU_SYNC_SUB_SESSIONS", "false").lower() == "true"
+    main_session_id = _get_main_session_id()
+    if not main_session_id:
+        print(
+            "[convert_sessions] No main session found in sessions.json",
+            file=__import__("sys").stderr,
+        )
+        return []
+
+    main_session_file = os.path.join(sessions_dir, f"{main_session_id}.jsonl")
+    if not os.path.exists(main_session_file):
+        print(
+            f"[convert_sessions] Main session file not found: {main_session_file}",
+            file=__import__("sys").stderr,
+        )
+        return []
 
     state = _load_state()
     sessions_state: dict[str, Any] = state.setdefault("sessions", {})
-
     converted: list[str] = []
+    lang_prefix = _get_language_prefix()
 
-    # ==========================================================================
-    # PHASE 1: Process .deleted files FIRST (historical data)
-    # This ensures older sessions update summaries before newer ones.
-    # ==========================================================================
-    processed_deleted: set[str] = set(state.get("processed_deleted", []))
+    file_path = main_session_file
+    session_id = main_session_id
 
-    # Prune old entries occasionally
-    if len(processed_deleted) > 1000:
-        existing_deleted = set()
-        for fn in processed_deleted:
-            if os.path.exists(os.path.join(sessions_dir, fn)):
-                existing_deleted.add(fn)
-        processed_deleted = existing_deleted
+    try:
+        st = os.stat(file_path)
+    except FileNotFoundError:
+        _save_state(state)
+        return converted
 
-    deleted_files = glob.glob(DELETED_GLOB)
+    prev = sessions_state.get(session_id) if isinstance(sessions_state, dict) else None
+    if not isinstance(prev, dict):
+        prev = {}
 
-    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
-    if not sync_sub_sessions:
-        filtered_deleted = []
-        for fp in deleted_files:
-            sid = _extract_session_id(os.path.basename(fp))
-            if sid and _is_main_session(sid):
-                filtered_deleted.append(fp)
-        deleted_files = filtered_deleted
+    prev_offset = int(prev.get("last_offset", 0) or 0)
+    prev_size = int(prev.get("last_size", 0) or 0)
+    prev_dev = prev.get("device")
+    prev_ino = prev.get("inode")
+    prev_lang = prev.get("lang_prefix")
+    prev_part_count = int(prev.get("part_count", 0) or 0)
+    prev_tail_count = int(prev.get("tail_part_messages", 0) or 0)
+    prev_head_sha = str(prev.get("head_sha256", "") or "")
+    prev_tail_sha = str(prev.get("tail_sha256", "") or "")
 
-    # Sort by session start time (oldest first) - from session header
-    deleted_files.sort(key=lambda p: _get_session_start_time(p))
+    cur_size = int(st.st_size)
+    cur_mtime = float(st.st_mtime)
+    cur_dev = int(getattr(st, "st_dev", 0))
+    cur_ino = int(getattr(st, "st_ino", 0))
 
-    # Helper function for writing parts
-    def _write_deleted_part(
-        part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None
-    ) -> None:
-        if lang_prefix:
-            part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(part_messages, f, indent=2, ensure_ascii=False)
+    if since_ts is not None and cur_mtime <= since_ts:
+        if not prev or cur_size <= prev_offset:
+            _save_state(state)
+            return converted
 
-    for file_path in deleted_files:
-        filename = os.path.basename(file_path)
-
-        # Skip if already processed (deleted files are immutable)
-        if filename in processed_deleted:
-            continue
-
-        session_id = _extract_session_id(filename)
-        if not session_id:
-            continue
-
-        # Get existing state or start fresh (for sessions deleted before first sync)
-        prev = sessions_state.get(session_id)
-        if not isinstance(prev, dict):
-            prev = {}  # No prior state - treat as new, read from beginning
-
-        prev_offset = int(prev.get("last_offset", 0) or 0)
-
-        try:
-            st = os.stat(file_path)
-            cur_size = int(st.st_size)
-        except FileNotFoundError:
-            processed_deleted.add(filename)
-            continue
-
-        # If deleted file is smaller than or equal to last offset, no new data
-        if cur_size <= prev_offset:
-            processed_deleted.add(filename)
-            continue
-
-        # Read from last known offset to end, with error handling
-        try:
-            read_res = _read_messages_from_jsonl(
-                file_path=file_path, start_offset=prev_offset
-            )
-            new_messages = read_res.messages
-        except Exception as e:
-            # Log error and skip corrupted file
-            import sys
-
-            print(
-                f"[convert_sessions] Error reading deleted file {filename}: {e}",
-                file=sys.stderr,
-            )
-            processed_deleted.add(filename)
-            continue
-
-        if new_messages:
-            # Generate new parts for the tail content
-            lang_prefix = _get_language_prefix()
-
-            # Use part_count to determine next part index (prevents overwriting)
-            next_part_idx = int(prev.get("part_count", 0))
-
-            # Write new parts
-            if max_messages > 0:
-                for idx in range(0, len(new_messages), max_messages):
-                    part_path = os.path.join(
-                        OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json"
-                    )
-                    _write_deleted_part(
-                        new_messages[idx : idx + max_messages], part_path, lang_prefix
-                    )
-                    converted.append(part_path)
-                    next_part_idx += 1
-            else:
-                part_path = os.path.join(
-                    OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json"
-                )
-                _write_deleted_part(new_messages, part_path, lang_prefix)
-                converted.append(part_path)
-                next_part_idx += 1
-
-            # Log progress for debugging
-            import sys
-
-            print(
-                f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)",
-                file=sys.stderr,
-            )
-
-        processed_deleted.add(filename)
-
-    state["processed_deleted"] = list(processed_deleted)
-
-    # ==========================================================================
-    # PHASE 2: Process active .jsonl files (current/ongoing sessions)
-    # These are processed AFTER deleted files, so newer data updates last.
-    # ==========================================================================
-
-    # Get all active session files and filter/sort them
-    session_files = glob.glob(SESSION_GLOB)
-
-    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
-    if not sync_sub_sessions:
-        filtered_files = []
-        for fp in session_files:
-            sid = _extract_session_id(os.path.basename(fp))
-            if sid and _is_main_session(sid):
-                filtered_files.append(fp)
-        session_files = filtered_files
-
-    # Sort by session start time (oldest first) to ensure chronological processing
-    session_files.sort(key=lambda p: _get_session_start_time(p))
-
-    for file_path in session_files:
-        filename = os.path.basename(file_path)
-        session_id = _extract_session_id(filename)
-        if not session_id:
-            continue
-        lang_prefix = _get_language_prefix()
-
-        try:
-            st = os.stat(file_path)
-        except FileNotFoundError:
-            continue
-
-        prev = (
-            sessions_state.get(session_id) if isinstance(sessions_state, dict) else None
-        )
-        if not isinstance(prev, dict):
-            prev = {}
-
-        prev_offset = int(prev.get("last_offset", 0) or 0)
-        prev_size = int(prev.get("last_size", 0) or 0)
-        prev_dev = prev.get("device")
-        prev_ino = prev.get("inode")
-        prev_lang = prev.get("lang_prefix")
-        prev_part_count = int(prev.get("part_count", 0) or 0)
-        prev_tail_count = int(prev.get("tail_part_messages", 0) or 0)
-        prev_head_sha = str(prev.get("head_sha256", "") or "")
-        prev_tail_sha = str(prev.get("tail_sha256", "") or "")
-
-        cur_size = int(st.st_size)
-        cur_mtime = float(st.st_mtime)
-        cur_dev = int(getattr(st, "st_dev", 0))
-        cur_ino = int(getattr(st, "st_ino", 0))
-
-        # since_ts is a fast-path hint, but it can miss appends on filesystems with
-        # coarse mtime resolution. If we have state and the file grew past last_offset,
-        # we still process even when mtime <= since_ts.
-        if since_ts is not None and cur_mtime <= since_ts:
-            if not prev or cur_size <= prev_offset:
-                continue
-
-        # Decide whether we can do append-only incremental processing.
-        append_only = True
-        if prev and (prev_dev is not None and prev_ino is not None):
-            if int(prev_dev) != cur_dev or int(prev_ino) != cur_ino:
-                append_only = False
-        if cur_size < prev_offset:
+    append_only = True
+    if prev and (prev_dev is not None and prev_ino is not None):
+        if int(prev_dev) != cur_dev or int(prev_ino) != cur_ino:
             append_only = False
-        if prev_lang != lang_prefix:
-            # Changing language instruction changes the conversation payload => rebuild.
+    if cur_size < prev_offset:
+        append_only = False
+    if prev_lang != lang_prefix:
+        append_only = False
+
+    if append_only and prev_offset > 0 and (prev_head_sha or prev_tail_sha):
+        head_len = min(SAMPLE_BYTES, cur_size)
+        head_sha = _sha256_file_sample(file_path=file_path, start=0, length=head_len)
+        tail_start = max(0, prev_offset - SAMPLE_BYTES)
+        tail_len = max(0, min(SAMPLE_BYTES, prev_offset - tail_start))
+        tail_sha = _sha256_file_sample(
+            file_path=file_path, start=tail_start, length=tail_len
+        )
+        if (prev_head_sha and head_sha != prev_head_sha) or (
+            prev_tail_sha and tail_sha != prev_tail_sha
+        ):
             append_only = False
 
-        # Cheap edit detection: compare head/tail samples from last processed size.
-        if append_only and prev_offset > 0 and (prev_head_sha or prev_tail_sha):
-            head_len = min(SAMPLE_BYTES, cur_size)
-            head_sha = _sha256_file_sample(
-                file_path=file_path, start=0, length=head_len
-            )
-            tail_start = max(0, prev_offset - SAMPLE_BYTES)
-            tail_len = max(0, min(SAMPLE_BYTES, prev_offset - tail_start))
-            tail_sha = _sha256_file_sample(
-                file_path=file_path, start=tail_start, length=tail_len
-            )
-            if (prev_head_sha and head_sha != prev_head_sha) or (
-                prev_tail_sha and tail_sha != prev_tail_sha
-            ):
-                append_only = False
+    if not prev or not append_only:
+        read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
+        messages = read_res.messages
 
-        # If no state or we can't trust append-only, do a full rebuild for this session.
-        if not prev or not append_only:
-            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
-            messages = read_res.messages
-
-            # Always write parts for incremental stability.
-            new_part_count = 0
-            if max_messages > 0:
-                for idx in range(0, len(messages), max_messages):
-                    part_idx = idx // max_messages
-                    part_path = _part_path(session_id, part_idx)
-                    changed, _ = _write_part_json(
-                        part_messages=messages[idx : idx + max_messages],
-                        out_path=part_path,
-                        lang_prefix=lang_prefix,
-                    )
-                    new_part_count += 1
-                    if changed:
-                        converted.append(part_path)
-            else:
-                # Fallback: single file overwrite mode.
-                out_path = os.path.join(OUT_DIR, f"{session_id}.json")
-                changed, _ = _write_part_json(
-                    part_messages=messages,
-                    out_path=out_path,
-                    lang_prefix=lang_prefix,
-                )
-                new_part_count = 1 if messages else 0
-                if changed:
-                    converted.append(out_path)
-
-            # Remove stale old part files if the session shrank.
-            if (
-                max_messages > 0
-                and prev_part_count
-                and new_part_count < prev_part_count
-            ):
-                for part_idx in range(new_part_count, prev_part_count):
-                    try:
-                        os.remove(_part_path(session_id, part_idx))
-                    except FileNotFoundError:
-                        pass
-                    except Exception:
-                        pass
-
-            # Update state.
-            head_len = min(SAMPLE_BYTES, cur_size)
-            head_sha = _sha256_file_sample(
-                file_path=file_path, start=0, length=head_len
-            )
-            tail_start = max(0, read_res.new_offset - SAMPLE_BYTES)
-            tail_len = max(0, min(SAMPLE_BYTES, read_res.new_offset - tail_start))
-            tail_sha = _sha256_file_sample(
-                file_path=file_path, start=tail_start, length=tail_len
-            )
-
-            tail_count = 0
-            if max_messages > 0 and new_part_count > 0:
-                # Best-effort: count messages in the last part excluding system prefix.
-                try:
-                    last_part_path = _part_path(session_id, new_part_count - 1)
-                    last_msgs = _read_part_messages(last_part_path)
-                    tail_count = len(_strip_system_prefix(last_msgs, lang_prefix))
-                except Exception:
-                    tail_count = 0
-
-            sessions_state[session_id] = {
-                "file_path": file_path,
-                "device": cur_dev,
-                "inode": cur_ino,
-                "last_offset": int(read_res.new_offset),
-                "last_size": cur_size,
-                "last_mtime": cur_mtime,
-                "part_count": int(new_part_count),
-                "tail_part_messages": int(tail_count),
-                "lang_prefix": lang_prefix,
-                "head_sha256": head_sha,
-                "tail_sha256": tail_sha,
-            }
-            continue
-
-        # Append-only: read from previous offset and only update tail/new parts.
-        if cur_size == prev_offset:
-            # No new bytes.
-            continue
-
-        read_res = _read_messages_from_jsonl(
-            file_path=file_path, start_offset=prev_offset
-        )
-        new_messages = read_res.messages
-        if not new_messages and read_res.new_offset == prev_offset:
-            # Likely an incomplete trailing line; try again next sync.
-            continue
-
-        part_count = prev_part_count
-        tail_count = prev_tail_count
-        if max_messages <= 0:
-            # Can't do incremental without parts; overwrite single file.
-            out_path = os.path.join(OUT_DIR, f"{session_id}.json")
-            # Rebuild full messages to avoid inconsistent state.
-            full_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
-            changed, _ = _write_part_json(
-                part_messages=full_res.messages,
-                out_path=out_path,
-                lang_prefix=lang_prefix,
-            )
-            if changed:
-                converted.append(out_path)
-            part_count = 1 if full_res.messages else 0
-            tail_count = len(full_res.messages)
-            prev_offset = 0
-            read_res = full_res
-        else:
-            # Load last part (if any) to append into it until full.
-            if part_count <= 0:
-                part_count = 1
-                tail_count = 0
-
-            last_part_idx = max(0, part_count - 1)
-            last_part_path = _part_path(session_id, last_part_idx)
-            try:
-                existing_part = _read_part_messages(last_part_path)
-                existing_msgs = _strip_system_prefix(existing_part, lang_prefix)
-            except FileNotFoundError:
-                existing_msgs = []
-            except Exception:
-                # If the tail part is corrupted, fall back to full rebuild next time.
-                existing_msgs = []
-
-            # Append into last part (may rewrite it) and then spill into new parts.
-            buf = list(existing_msgs)
-            remain = list(new_messages)
-
-            # Fill tail part up to max_messages.
-            if len(buf) < max_messages and remain:
-                take = min(max_messages - len(buf), len(remain))
-                buf.extend(remain[:take])
-                remain = remain[take:]
-                changed, _ = _write_part_json(
-                    part_messages=buf,
-                    out_path=last_part_path,
-                    lang_prefix=lang_prefix,
-                )
-                if changed:
-                    converted.append(last_part_path)
-
-            # If tail part reached max, subsequent messages go to new parts.
-            if len(buf) >= max_messages:
-                tail_count = max_messages
-            else:
-                tail_count = len(buf)
-
-            while remain:
-                part_idx = part_count
-                chunk = remain[:max_messages]
-                remain = remain[max_messages:]
+        new_part_count = 0
+        if max_messages > 0:
+            for idx in range(0, len(messages), max_messages):
+                part_idx = idx // max_messages
                 part_path = _part_path(session_id, part_idx)
                 changed, _ = _write_part_json(
-                    part_messages=chunk,
+                    part_messages=messages[idx : idx + max_messages],
                     out_path=part_path,
                     lang_prefix=lang_prefix,
                 )
+                new_part_count += 1
                 if changed:
                     converted.append(part_path)
-                part_count += 1
-                tail_count = len(chunk)
+        else:
+            out_path = os.path.join(OUT_DIR, f"{session_id}.json")
+            changed, _ = _write_part_json(
+                part_messages=messages,
+                out_path=out_path,
+                lang_prefix=lang_prefix,
+            )
+            new_part_count = 1 if messages else 0
+            if changed:
+                converted.append(out_path)
 
-        # Update state (advance cursor to last complete line we consumed).
+        if max_messages > 0 and prev_part_count and new_part_count < prev_part_count:
+            for part_idx in range(new_part_count, prev_part_count):
+                try:
+                    os.remove(_part_path(session_id, part_idx))
+                except FileNotFoundError:
+                    pass
+
         head_len = min(SAMPLE_BYTES, cur_size)
         head_sha = _sha256_file_sample(file_path=file_path, start=0, length=head_len)
         tail_start = max(0, read_res.new_offset - SAMPLE_BYTES)
@@ -671,6 +470,15 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             file_path=file_path, start=tail_start, length=tail_len
         )
 
+        tail_count = 0
+        if max_messages > 0 and new_part_count > 0:
+            try:
+                last_part_path = _part_path(session_id, new_part_count - 1)
+                last_msgs = _read_part_messages(last_part_path)
+                tail_count = len(_strip_system_prefix(last_msgs, lang_prefix))
+            except Exception:
+                tail_count = 0
+
         sessions_state[session_id] = {
             "file_path": file_path,
             "device": cur_dev,
@@ -678,20 +486,131 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             "last_offset": int(read_res.new_offset),
             "last_size": cur_size,
             "last_mtime": cur_mtime,
-            "part_count": int(part_count),
+            "part_count": int(new_part_count),
             "tail_part_messages": int(tail_count),
             "lang_prefix": lang_prefix,
             "head_sha256": head_sha,
             "tail_sha256": tail_sha,
         }
+        _save_state(state)
+        return converted
+
+    if cur_size == prev_offset:
+        _save_state(state)
+        return converted
+
+    read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
+    new_messages = read_res.messages
+    if not new_messages and read_res.new_offset == prev_offset:
+        _save_state(state)
+        return converted
+
+    part_count = prev_part_count
+    tail_count = prev_tail_count
+
+    if max_messages <= 0:
+        out_path = os.path.join(OUT_DIR, f"{session_id}.json")
+        full_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
+        changed, _ = _write_part_json(
+            part_messages=full_res.messages,
+            out_path=out_path,
+            lang_prefix=lang_prefix,
+        )
+        if changed:
+            converted.append(out_path)
+        part_count = 1 if full_res.messages else 0
+        tail_count = len(full_res.messages)
+        read_res = full_res
+    else:
+        if part_count <= 0:
+            part_count = 1
+            tail_count = 0
+
+        last_part_idx = max(0, part_count - 1)
+        last_part_path = _part_path(session_id, last_part_idx)
+        try:
+            existing_part = _read_part_messages(last_part_path)
+            existing_msgs = _strip_system_prefix(existing_part, lang_prefix)
+        except FileNotFoundError:
+            existing_msgs = []
+        except Exception:
+            existing_msgs = []
+
+        buf = list(existing_msgs)
+        remain = list(new_messages)
+
+        if len(buf) < max_messages and remain:
+            take = min(max_messages - len(buf), len(remain))
+            buf.extend(remain[:take])
+            remain = remain[take:]
+            changed, _ = _write_part_json(
+                part_messages=buf,
+                out_path=last_part_path,
+                lang_prefix=lang_prefix,
+            )
+            if changed:
+                converted.append(last_part_path)
+
+        if len(buf) >= max_messages:
+            tail_count = max_messages
+        else:
+            tail_count = len(buf)
+
+        while remain:
+            part_idx = part_count
+            chunk = remain[:max_messages]
+            remain = remain[max_messages:]
+            part_path = _part_path(session_id, part_idx)
+            changed, _ = _write_part_json(
+                part_messages=chunk,
+                out_path=part_path,
+                lang_prefix=lang_prefix,
+            )
+            if changed:
+                converted.append(part_path)
+            part_count += 1
+            tail_count = len(chunk)
+
+    head_len = min(SAMPLE_BYTES, cur_size)
+    head_sha = _sha256_file_sample(file_path=file_path, start=0, length=head_len)
+    tail_start = max(0, read_res.new_offset - SAMPLE_BYTES)
+    tail_len = max(0, min(SAMPLE_BYTES, read_res.new_offset - tail_start))
+    tail_sha = _sha256_file_sample(
+        file_path=file_path, start=tail_start, length=tail_len
+    )
+
+    sessions_state[session_id] = {
+        "file_path": file_path,
+        "device": cur_dev,
+        "inode": cur_ino,
+        "last_offset": int(read_res.new_offset),
+        "last_size": cur_size,
+        "last_mtime": cur_mtime,
+        "part_count": int(part_count),
+        "tail_part_messages": int(tail_count),
+        "lang_prefix": lang_prefix,
+        "head_sha256": head_sha,
+        "tail_sha256": tail_sha,
+    }
 
     _save_state(state)
     return converted
 
 
 if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--debug":
+        main_id = _get_main_session_id()
+        print(f"Main session ID: {main_id}")
+        if main_id:
+            main_file = os.path.join(sessions_dir, f"{main_id}.jsonl")
+            print(f"Main session file: {main_file}")
+            print(f"Exists: {os.path.exists(main_file)}")
+        sys.exit(0)
+
     paths = convert()
-    print(f"Converted {len(paths)} sessions into {OUT_DIR}.")
+    print(f"Converted main session into {len(paths)} part(s) in {OUT_DIR}.")
     for p in paths[:20]:
         print(f"- {p}")
     if len(paths) > 20:

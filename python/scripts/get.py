@@ -20,10 +20,67 @@ def get_db_dsn() -> str:
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 
+def _expand_short_path(short: str) -> str | None:
+    """Expand shortened memU paths back to full paths."""
+    import json
+    import re
+
+    data_dir = os.getenv("MEMU_DATA_DIR", "")
+    workspace_dir = os.getenv(
+        "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
+    )
+    extra_paths_json = os.getenv("MEMU_EXTRA_PATHS", "[]")
+    try:
+        extra_paths: list[str] = (
+            json.loads(extra_paths_json) if extra_paths_json else []
+        )
+    except Exception:
+        extra_paths = []
+
+    # ws:relative/path -> /workspace_dir/relative/path
+    if short.startswith("ws:"):
+        rel = short[3:]
+        return os.path.join(workspace_dir, rel) if rel else workspace_dir
+
+    # ext{i}:relative/path -> /extra_paths[i]/relative/path
+    m = re.match(r"^ext(\d+):(.*)$", short)
+    if m:
+        idx, rel = int(m.group(1)), m.group(2)
+        if 0 <= idx < len(extra_paths):
+            return os.path.join(extra_paths[idx], rel) if rel else extra_paths[idx]
+
+    # conv:UUID_PREFIX:pN -> conversations/UUID.partNNN.json
+    m = re.match(r"^conv:([a-f0-9-]+):p(\d+)$", short)
+    if m:
+        prefix, part = m.group(1), int(m.group(2))
+        conv_dir = os.path.join(data_dir, "conversations") if data_dir else ""
+        if conv_dir and os.path.isdir(conv_dir):
+            for f in os.listdir(conv_dir):
+                if f.startswith(prefix) and f.endswith(f".part{part:03d}.json"):
+                    return f"conversations/{f}"
+
+    # conv:UUID_PREFIX -> conversations/UUID.json
+    m = re.match(r"^conv:([a-f0-9-]+)$", short)
+    if m:
+        prefix = m.group(1)
+        conv_dir = os.path.join(data_dir, "conversations") if data_dir else ""
+        if conv_dir and os.path.isdir(conv_dir):
+            for f in os.listdir(conv_dir):
+                if f.startswith(prefix) and f.endswith(".json") and ".part" not in f:
+                    return f"conversations/{f}"
+
+    return None
+
+
 async def get_resource(path_or_id: str):
     is_memu_uri = path_or_id.startswith("memu://")
     if is_memu_uri:
         path_or_id = path_or_id.replace("memu://", "", 1)
+
+    if path_or_id.startswith(("conv:", "ws:", "ext")):
+        expanded = _expand_short_path(path_or_id)
+        if expanded:
+            path_or_id = expanded
 
     user_id = os.getenv("MEMU_USER_ID") or "default"
 

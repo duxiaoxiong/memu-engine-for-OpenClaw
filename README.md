@@ -1,11 +1,3 @@
-> ⚠️ **警告：暂时有性能 Bug**
->
-> 本项目目前存在严重的性能问题，正在紧急修复中。请暂时不要使用。
->
-> **WARNING: Performance Issues**
->
-> This project currently has severe performance bugs and is under repair. Please do NOT use it for now.
-
 # memU Engine for OpenClaw (中文版)
 
 项目链接：
@@ -82,7 +74,9 @@ openclaw gateway restart
           },
           // 3. 输出语言
           "language": "zh",
-          // 4. 文档录入配置
+          // 4. 数据存储目录 (可选)
+          "dataDir": "~/.openclaw/memUdata",
+          // 5. 文档录入配置
           "ingest": {
             "includeDefaultPaths": true,
             "extraPaths": [
@@ -112,7 +106,19 @@ openclaw gateway restart
 *   **选项**：`zh` (中文), `en` (英文), `ja` (日文)。
 *   **建议**：设置为与你日常对话相同的语言，有助于提高记忆识别率。
 
-### 4. `ingest` (文档录入)
+### 4. `dataDir` (数据目录)
+指定 memU 数据库和对话文件的存储位置。
+*   **默认**：`~/.openclaw/memUdata`
+*   **用途**：聊天记录属于敏感数据，你可以将其存储在加密分区或自定义位置。
+*   **目录结构**：
+    ```
+    {dataDir}/
+    ├── memu.db           # SQLite 数据库
+    ├── conversations/    # 对话分片
+    └── resources/        # 资源文件
+    ```
+
+### 5. `ingest` (文档录入)
 配置除会话日志外，还需要录入哪些 Markdown 文档。
 
 *   **`includeDefaultPaths`** (bool): 是否包含默认工作区文档（`workspace/*.md` 和 `memory/*.md`）。默认为 `true`。
@@ -140,12 +146,44 @@ openclaw gateway restart
 
 为了确保记忆摘要始终反映最新内容，插件采用分阶段处理策略：
 
-1.  **历史优先**：优先处理 `.deleted` 文件（已轮转的历史会话），按 session 创建时间正序处理。
-2.  **活跃跟进**：随后处理活跃的 `.jsonl` 文件，同样按时间正序。
+1.  **主会话识别**：通过 `sessions.json` 中的 `agent:main:main` 条目识别真正的用户主对话，忽略所有子代理会话和 `.deleted` 归档文件。
+2.  **智能过滤**：自动过滤系统注入消息（NO_REPLY、工具调用、Model 切换通知等），只保留真正的用户对话。
 3.  **增量更新**：利用 `offset` 和 `hash` 检测文件变化，只读取新增消息，避免重复消耗 Token。
-4.  **智能过滤**：默认仅同步主会话（UUID），自动忽略子任务会话（除非设置 `MEMU_SYNC_SUB_SESSIONS=true`）。
+4.  **路径优化**：搜索结果中的路径会自动缩短（如 `ws:docs/guide.md`、`conv:75fcef11:p0`），减少 AI 上下文占用。
 
-同步状态保存在 `~/.openclaw/workspace/memU/data/conversations/state.json`。
+同步状态保存在 `{dataDir}/conversations/state.json`。
+
+## 禁用与回退
+
+### 临时禁用
+
+在 `openclaw.json` 中移除或注释掉 `memu-engine` 配置：
+
+```json
+{
+  "extensions": {
+    // "memu-engine": { ... }  // 注释掉即可禁用
+  }
+}
+```
+
+### 完全卸载
+
+1. 删除插件目录：
+   ```bash
+   rm -rf ~/.openclaw/extensions/memu-engine
+   ```
+
+2. （可选）删除记忆数据：
+   ```bash
+   rm -rf ~/.openclaw/memUdata
+   ```
+
+3. 重启 OpenClaw
+
+### 回退到原生记忆
+
+OpenClaw 原生的记忆功能会自动恢复，无需额外配置。禁用本插件后，原生的 `memory_search` 和 `memory_get` 工具将恢复使用。
 
 ## 许可证
 
