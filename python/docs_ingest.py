@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import sqlite3
 from datetime import datetime
 from memu.app.service import MemoryService
 from memu.app.settings import (
@@ -86,6 +87,51 @@ def get_db_dsn() -> str:
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 
+def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall() if len(row) > 1]
+        return column in set(cols)
+    except Exception:
+        return False
+
+
+def _resource_exists(resource_url: str, *, user_id: str) -> bool:
+    try:
+        data_dir = os.getenv("MEMU_DATA_DIR")
+        if not data_dir:
+            return False
+        db_path = os.path.join(data_dir, "memu.db")
+        if not os.path.exists(db_path):
+            return False
+
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memu_resources'"
+        )
+        if cur.fetchone() is None:
+            conn.close()
+            return False
+
+        if _db_has_column(conn, table="memu_resources", column="user_id"):
+            cur.execute(
+                "SELECT 1 FROM memu_resources WHERE url = ? AND user_id = ? LIMIT 1",
+                (resource_url, user_id),
+            )
+        else:
+            cur.execute(
+                "SELECT 1 FROM memu_resources WHERE url = ? LIMIT 1",
+                (resource_url,),
+            )
+        exists = cur.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception:
+        return False
+
+
 def get_extra_paths() -> list[str]:
     raw = os.getenv("MEMU_EXTRA_PATHS", "[]")
     try:
@@ -169,6 +215,9 @@ async def main():
     for file_path in files_to_ingest:
         _log(f"docs_ingest ingest: {file_path}")
         try:
+            if _resource_exists(file_path, user_id=user_id):
+                _log(f"docs_ingest skip existing: {file_path}")
+                continue
             await asyncio.wait_for(
                 service.memorize(
                     resource_url=file_path,
