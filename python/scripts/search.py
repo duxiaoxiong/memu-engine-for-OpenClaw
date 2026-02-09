@@ -23,6 +23,16 @@ def _env(name: str, default: str | None = None) -> str | None:
     return default
 
 
+def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall() if len(row) > 1]
+        return column in set(cols)
+    except Exception:
+        return False
+
+
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
     if not data_dir:
@@ -121,10 +131,17 @@ if __name__ == "__main__":
                     conn = sqlite3.connect(db_path)
                     cur = conn.cursor()
                     placeholders = ",".join(["?"] * len(missing_ids))
-                    cur.execute(
-                        f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders})",
-                        missing_ids,
-                    )
+                    user_id = _env("MEMU_USER_ID", "default") or "default"
+                    if _db_has_column(conn, table="memu_resources", column="user_id"):
+                        cur.execute(
+                            f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders}) AND user_id = ?",
+                            [*missing_ids, user_id],
+                        )
+                    else:
+                        cur.execute(
+                            f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders})",
+                            missing_ids,
+                        )
                     for rid, url in cur.fetchall():
                         resource_url_map[rid] = url
                     conn.close()

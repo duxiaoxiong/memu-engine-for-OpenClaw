@@ -1,5 +1,5 @@
-import argparse
 import asyncio
+import argparse
 import os
 import sys
 
@@ -25,6 +25,8 @@ async def get_resource(path_or_id: str):
     if is_memu_uri:
         path_or_id = path_or_id.replace("memu://", "", 1)
 
+    user_id = os.getenv("MEMU_USER_ID") or "default"
+
     dummy_llm = LLMConfig(
         provider="openai",
         base_url="http://localhost",
@@ -40,8 +42,10 @@ async def get_resource(path_or_id: str):
         database_config=db_config,
     )
 
-    # List resources to find a match
-    resources = service.database.resource_repo.list_resources()
+    # List scoped resources to find a match
+    resources = service.database.resource_repo.list_resources(
+        where={"user_id": user_id}
+    )
     target = None
     for res in resources.values():
         if res.url == path_or_id or res.id == path_or_id:
@@ -75,12 +79,23 @@ async def get_resource(path_or_id: str):
 
 
 def _resolve_file_path(path_str: str) -> str:
-    if os.path.isabs(path_str):
-        return path_str
     workspace_dir = os.getenv("MEMU_WORKSPACE_DIR")
     if not workspace_dir:
         workspace_dir = os.path.expanduser("~/.openclaw/workspace")
-    return os.path.normpath(os.path.join(workspace_dir, path_str))
+
+    workspace_real = os.path.realpath(workspace_dir)
+
+    if os.path.isabs(path_str):
+        candidate = os.path.realpath(path_str)
+    else:
+        candidate = os.path.realpath(
+            os.path.normpath(os.path.join(workspace_dir, path_str))
+        )
+
+    # Prevent path traversal / reading outside workspace.
+    if os.path.commonpath([workspace_real, candidate]) != workspace_real:
+        raise ValueError(f"Path escapes workspace: {path_str}")
+    return candidate
 
 
 def _read_file_range(file_path: str, offset: int, limit: int | None) -> str:
