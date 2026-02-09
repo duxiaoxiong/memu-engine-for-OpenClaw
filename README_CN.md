@@ -241,7 +241,7 @@ MemU 上游包含一个 Rust 编写的 Python 原生扩展（`memu._core`）。�
 
 ```bash
 openclaw gateway restart
-openclaw agent --message "Call the tool memory_search with query=\"test\"." --thinking off
+openclaw agent --message "Call the tool memory_search with query=\"xx\"." --thinking off
 ```
 
 如果模型参数配置正确，第一次调用也会拉起后台 watcher 并开始录入工作区文档。

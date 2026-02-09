@@ -252,7 +252,7 @@ After installation and configuration:
 
 ```bash
 openclaw gateway restart
-openclaw agent --message "Call the tool memory_search with query=\"test\"." --thinking off
+openclaw agent --message "Call the tool memory_search with query=\"xx\"." --thinking off
 ```
 
 If the models are configured correctly, the first call will also start the background watcher and ingest
