@@ -147,6 +147,35 @@ To ensure memory summaries always reflect the latest content, the plugin uses a 
 
 Sync state is saved in `~/.openclaw/workspace/memU/data/conversations/state.json`.
 
+## Disable and Uninstall
+
+### Temporary Disable
+
+Remove or comment out the `memu-engine` configuration in `openclaw.json`:
+
+```jsonc
+{
+  "extensions": {
+    // "memu-engine": { ... }  // Comment out to disable
+  }
+}
+```
+
+### Full Uninstall
+
+1.  Disable the plugin in `openclaw.json`.
+2.  Restart Gateway.
+3.  (Optional) Delete data and plugin files:
+
+```bash
+rm -rf ~/.openclaw/extensions/memu-engine
+rm -rf ~/.openclaw/memUdata  # Or your configured dataDir
+```
+
+## State Tracking
+
+Sync state is stored in `{dataDir}/conversations/state.json`.
+
 ## License
 
 Apache License 2.0
