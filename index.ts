@@ -65,6 +65,12 @@ const memuEnginePlugin = {
     let isShuttingDown = false;
 
     const startSyncService = (pluginConfig: any, workspaceDir: string) => {
+      // Ensure clean slate: kill old orphaned processes to pick up new config
+      try { 
+        require('child_process').execSync('pkill -f watch_sync.py || true');
+        require('child_process').execSync('pkill -f auto_sync.py || true');
+      } catch (e) { /* ignore */ }
+
       if (syncProcess) return; // Already running
 
       const embeddingConfig = pluginConfig.embedding || {};
