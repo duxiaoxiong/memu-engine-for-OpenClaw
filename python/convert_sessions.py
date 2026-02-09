@@ -275,8 +275,119 @@ def convert(*, since_ts: float | None = None) -> list[str]:
 
     state = _load_state()
     sessions_state: dict[str, Any] = state.setdefault("sessions", {})
+    
+    converted: list[str] = []
 
-    # Get all session files and filter/sort them
+    # ==========================================================================
+    # PHASE 1: Process .deleted files FIRST (historical data)
+    # This ensures older sessions update summaries before newer ones.
+    # ==========================================================================
+    processed_deleted: set[str] = set(state.get("processed_deleted", []))
+    
+    # Prune old entries occasionally
+    if len(processed_deleted) > 1000:
+        existing_deleted = set()
+        for fn in processed_deleted:
+            if os.path.exists(os.path.join(sessions_dir, fn)):
+                existing_deleted.add(fn)
+        processed_deleted = existing_deleted
+
+    deleted_files = glob.glob(DELETED_GLOB)
+    
+    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
+    if not sync_sub_sessions:
+        filtered_deleted = []
+        for fp in deleted_files:
+            sid = _extract_session_id(os.path.basename(fp))
+            if sid and _is_main_session(sid):
+                filtered_deleted.append(fp)
+        deleted_files = filtered_deleted
+    
+    # Sort by session start time (oldest first) - from session header
+    deleted_files.sort(key=lambda p: _get_session_start_time(p))
+    
+    # Helper function for writing parts
+    def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
+        if lang_prefix:
+            part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(part_messages, f, indent=2, ensure_ascii=False)
+
+    for file_path in deleted_files:
+        filename = os.path.basename(file_path)
+        
+        # Skip if already processed (deleted files are immutable)
+        if filename in processed_deleted:
+            continue
+        
+        session_id = _extract_session_id(filename)
+        if not session_id:
+            continue
+        
+        # Get existing state or start fresh (for sessions deleted before first sync)
+        prev = sessions_state.get(session_id)
+        if not isinstance(prev, dict):
+            prev = {}  # No prior state - treat as new, read from beginning
+        
+        prev_offset = int(prev.get("last_offset", 0) or 0)
+        
+        try:
+            st = os.stat(file_path)
+            cur_size = int(st.st_size)
+        except FileNotFoundError:
+            processed_deleted.add(filename)
+            continue
+        
+        # If deleted file is smaller than or equal to last offset, no new data
+        if cur_size <= prev_offset:
+            processed_deleted.add(filename)
+            continue
+        
+        # Read from last known offset to end, with error handling
+        try:
+            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
+            new_messages = read_res.messages
+        except Exception as e:
+            # Log error and skip corrupted file
+            import sys
+            print(f"[convert_sessions] Error reading deleted file {filename}: {e}", file=sys.stderr)
+            processed_deleted.add(filename)
+            continue
+        
+        if new_messages:
+            # Generate new parts for the tail content
+            lang_prefix = _get_language_prefix()
+            
+            # Use part_count to determine next part index (prevents overwriting)
+            next_part_idx = int(prev.get("part_count", 0))
+            
+            # Write new parts
+            if max_messages > 0:
+                for idx in range(0, len(new_messages), max_messages):
+                    part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
+                    _write_deleted_part(new_messages[idx : idx + max_messages], part_path, lang_prefix)
+                    converted.append(part_path)
+                    next_part_idx += 1
+            else:
+                part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
+                _write_deleted_part(new_messages, part_path, lang_prefix)
+                converted.append(part_path)
+                next_part_idx += 1
+            
+            # Log progress for debugging
+            import sys
+            print(f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)", file=sys.stderr)
+        
+        processed_deleted.add(filename)
+
+    state["processed_deleted"] = list(processed_deleted)
+
+    # ==========================================================================
+    # PHASE 2: Process active .jsonl files (current/ongoing sessions)
+    # These are processed AFTER deleted files, so newer data updates last.
+    # ==========================================================================
+    
+    # Get all active session files and filter/sort them
     session_files = glob.glob(SESSION_GLOB)
     
     # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
@@ -289,10 +400,7 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         session_files = filtered_files
     
     # Sort by session start time (oldest first) to ensure chronological processing
-    # Uses the timestamp from session header, not file mtime (which changes on copy)
     session_files.sort(key=lambda p: _get_session_start_time(p))
-    
-    converted: list[str] = []
 
     for file_path in session_files:
         filename = os.path.basename(file_path)
@@ -551,110 +659,6 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             "tail_sha256": tail_sha,
         }
 
-
-    # === PHASE 2: Process deleted files to catch rotation tails ===
-    processed_deleted: set[str] = set(state.get("processed_deleted", []))
-    
-    # Prune old entries occasionally
-    if len(processed_deleted) > 1000:
-        existing_deleted = set()
-        for fn in processed_deleted:
-            if os.path.exists(os.path.join(sessions_dir, fn)):
-                existing_deleted.add(fn)
-        processed_deleted = existing_deleted
-
-    deleted_files = glob.glob(DELETED_GLOB)
-    
-    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
-    if not sync_sub_sessions:
-        filtered_deleted = []
-        for fp in deleted_files:
-            sid = _extract_session_id(os.path.basename(fp))
-            if sid and _is_main_session(sid):
-                filtered_deleted.append(fp)
-        deleted_files = filtered_deleted
-    
-    # Sort by timestamp in filename (oldest first) for chronological processing
-    # Sort by session start time (oldest first) - same as active files
-    # This uses the timestamp from session header, not the deletion timestamp in filename
-    deleted_files.sort(key=lambda p: _get_session_start_time(p))
-    
-    # Helper function for writing parts (defined once, not in loop)
-    def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
-        if lang_prefix:
-            part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(part_messages, f, indent=2, ensure_ascii=False)
-
-    for file_path in deleted_files:
-        filename = os.path.basename(file_path)
-        
-        # Skip if already processed (deleted files are immutable)
-        if filename in processed_deleted:
-            continue
-        
-        session_id = _extract_session_id(filename)
-        if not session_id:
-            continue
-        
-        # Get existing state or start fresh (for sessions deleted before first sync)
-        prev = sessions_state.get(session_id)
-        if not isinstance(prev, dict):
-            prev = {}  # No prior state - treat as new, read from beginning
-        
-        prev_offset = int(prev.get("last_offset", 0) or 0)
-        
-        try:
-            st = os.stat(file_path)
-            cur_size = int(st.st_size)
-        except FileNotFoundError:
-            processed_deleted.add(filename)
-            continue
-        
-        # If deleted file is smaller than or equal to last offset, no new data
-        if cur_size <= prev_offset:
-            processed_deleted.add(filename)
-            continue
-        
-        # Read from last known offset to end, with error handling
-        try:
-            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
-            new_messages = read_res.messages
-        except Exception as e:
-            # Log error and skip corrupted file
-            import sys
-            print(f"[convert_sessions] Error reading deleted file {filename}: {e}", file=sys.stderr)
-            processed_deleted.add(filename)
-            continue
-        
-        if new_messages:
-            # Generate new parts for the tail content
-            lang_prefix = _get_language_prefix()
-            
-            # Use part_count (not last_part_idx) to determine next part index
-            # This prevents overwriting existing parts
-            next_part_idx = int(prev.get("part_count", 0))
-            
-            # Write new parts
-            if max_messages > 0:
-                for idx in range(0, len(new_messages), max_messages):
-                    part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
-                    _write_deleted_part(new_messages[idx : idx + max_messages], part_path, lang_prefix)
-                    converted.append(part_path)
-                    next_part_idx += 1
-            else:
-                part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
-                _write_deleted_part(new_messages, part_path, lang_prefix)
-                converted.append(part_path)
-                next_part_idx += 1
-            
-            # Log progress for debugging
-            import sys
-            print(f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)", file=sys.stderr)
-        
-        processed_deleted.add(filename)
-
-    state["processed_deleted"] = list(processed_deleted)
 
     _save_state(state)
     return converted
