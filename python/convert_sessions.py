@@ -498,6 +498,13 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         processed_deleted = existing_deleted
 
     deleted_files = glob.glob(DELETED_GLOB)
+    
+    # Helper function for writing parts (defined once, not in loop)
+    def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
+        if lang_prefix:
+            part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(part_messages, f, indent=2, ensure_ascii=False)
 
     for file_path in deleted_files:
         filename = os.path.basename(file_path)
@@ -529,41 +536,41 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             processed_deleted.add(filename)
             continue
         
-        # Read from last known offset to end
-        read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
-        new_messages = read_res.messages
+        # Read from last known offset to end, with error handling
+        try:
+            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
+            new_messages = read_res.messages
+        except Exception as e:
+            # Log error and skip corrupted file
+            import sys
+            print(f"[convert_sessions] Error reading deleted file {filename}: {e}", file=sys.stderr)
+            processed_deleted.add(filename)
+            continue
         
         if new_messages:
             # Generate new parts for the tail content
             lang_prefix = _get_language_prefix()
             
-            def _write_part(part_messages: list[dict[str, str]], out_path: str) -> None:
-                if lang_prefix:
-                    part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
-                with open(out_path, "w", encoding="utf-8") as f:
-                    import json
-                    json.dump(part_messages, f, indent=2, ensure_ascii=False)
-
-            # Determine start index for new parts
-            last_part_idx = int(prev.get("last_part_idx", -1))
-            next_part_idx = last_part_idx + 1
+            # Use part_count (not last_part_idx) to determine next part index
+            # This prevents overwriting existing parts
+            next_part_idx = int(prev.get("part_count", 0))
             
-            # Write new parts (logic similar to main loop but simplified)
+            # Write new parts
             if max_messages > 0:
                 for idx in range(0, len(new_messages), max_messages):
                     part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
-                    _write_part(new_messages[idx : idx + max_messages], part_path)
+                    _write_deleted_part(new_messages[idx : idx + max_messages], part_path, lang_prefix)
                     converted.append(part_path)
                     next_part_idx += 1
             else:
                 part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
-                _write_part(new_messages, part_path)
+                _write_deleted_part(new_messages, part_path, lang_prefix)
                 converted.append(part_path)
                 next_part_idx += 1
             
-            # Update state (even though file is deleted, we track progress to avoid reprocessing)
-            # Actually, for deleted files we just mark filename as processed
-            pass
+            # Log progress for debugging
+            import sys
+            print(f"[convert_sessions] Processed deleted file: {filename} -> {next_part_idx - int(prev.get('part_count', 0))} new part(s)", file=sys.stderr)
         
         processed_deleted.add(filename)
 
