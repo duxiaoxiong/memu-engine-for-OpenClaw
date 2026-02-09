@@ -1,3 +1,11 @@
+> ⚠️ **警告：暂时有性能 Bug**
+>
+> 本项目目前存在严重的性能问题，正在紧急修复中。请暂时不要使用。
+>
+> **WARNING: Performance Issues**
+>
+> This project currently has severe performance bugs and is under repair. Please do NOT use it for now.
+
 # memU Engine for OpenClaw (中文版)
 
 项目链接：
