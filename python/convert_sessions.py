@@ -1,4 +1,5 @@
 import glob
+import re
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
 if not sessions_dir:
     raise ValueError("OPENCLAW_SESSIONS_DIR env var is not set")
 SESSION_GLOB = os.path.join(sessions_dir, "*.jsonl")
+DELETED_GLOB = os.path.join(sessions_dir, "*.jsonl.deleted.*")
 
 memu_data_dir = os.getenv("MEMU_DATA_DIR")
 if not memu_data_dir:
@@ -56,6 +58,13 @@ def _sha256_bytes(data: bytes) -> str:
     return h.hexdigest()
 
 
+
+def _extract_session_id(filename: str) -> str | None:
+    """Extract session_id from filename, handling both .jsonl and .deleted variants."""
+    m = SESSION_FILENAME_RE.match(filename)
+    return m.group(1) if m else None
+
+
 def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
     """Hash a slice of the file (best-effort)."""
     try:
@@ -67,21 +76,20 @@ def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
 
 
 def _load_state() -> dict[str, Any]:
+    if not os.path.exists(STATE_FILE):
+        return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
     try:
-        with open(STATE_PATH, "r", encoding="utf-8") as f:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
             s = json.load(f)
-        if not isinstance(s, dict):
-            return {"version": STATE_VERSION, "sessions": {}}
         if s.get("version") != STATE_VERSION:
-            # For now, treat unknown versions as empty.
-            return {"version": STATE_VERSION, "sessions": {}}
-        sessions = s.get("sessions")
-        if not isinstance(sessions, dict):
-            sessions = {}
-        return {"version": STATE_VERSION, "sessions": sessions}
+            return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
+        sessions = s.get("sessions", {})
+        processed_deleted = s.get("processed_deleted", [])
+        if not isinstance(processed_deleted, list):
+            processed_deleted = []
+        return {"version": STATE_VERSION, "sessions": sessions, "processed_deleted": processed_deleted}
     except Exception:
-        return {"version": STATE_VERSION, "sessions": {}}
-
+        return {"version": STATE_VERSION, "sessions": {}, "processed_deleted": []}
 
 def _save_state(state: dict[str, Any]) -> None:
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -218,7 +226,10 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     converted: list[str] = []
 
     for file_path in session_files:
-        session_id = os.path.basename(file_path).replace(".jsonl", "")
+        filename = os.path.basename(file_path)
+        session_id = _extract_session_id(filename)
+        if not session_id:
+            continue
         lang_prefix = _get_language_prefix()
 
         try:
@@ -470,6 +481,91 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             "head_sha256": head_sha,
             "tail_sha256": tail_sha,
         }
+
+
+    # === PHASE 2: Process deleted files to catch rotation tails ===
+    processed_deleted: set[str] = set(state.get("processed_deleted", []))
+    
+    # Prune old entries occasionally
+    if len(processed_deleted) > 1000:
+        existing_deleted = set()
+        for fn in processed_deleted:
+            if os.path.exists(os.path.join(sessions_dir, fn)):
+                existing_deleted.add(fn)
+        processed_deleted = existing_deleted
+
+    deleted_files = glob.glob(DELETED_GLOB)
+
+    for file_path in deleted_files:
+        filename = os.path.basename(file_path)
+        
+        # Skip if already processed (deleted files are immutable)
+        if filename in processed_deleted:
+            continue
+        
+        session_id = _extract_session_id(filename)
+        if not session_id:
+            continue
+        
+        # Only process if we have existing state for this session
+        prev = sessions_state.get(session_id)
+        if not isinstance(prev, dict):
+            processed_deleted.add(filename)
+            continue
+        
+        prev_offset = int(prev.get("last_offset", 0) or 0)
+        
+        try:
+            st = os.stat(file_path)
+            cur_size = int(st.st_size)
+        except FileNotFoundError:
+            processed_deleted.add(filename)
+            continue
+        
+        # If deleted file is smaller than or equal to last offset, no new data
+        if cur_size <= prev_offset:
+            processed_deleted.add(filename)
+            continue
+        
+        # Read from last known offset to end
+        read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=prev_offset)
+        new_messages = read_res.messages
+        
+        if new_messages:
+            # Generate new parts for the tail content
+            lang_prefix = _get_language_prefix()
+            
+            def _write_part(part_messages: list[dict[str, str]], out_path: str) -> None:
+                if lang_prefix:
+                    part_messages = [{"role": "system", "content": lang_prefix}, *part_messages]
+                with open(out_path, "w", encoding="utf-8") as f:
+                    import json
+                    json.dump(part_messages, f, indent=2, ensure_ascii=False)
+
+            # Determine start index for new parts
+            last_part_idx = int(prev.get("last_part_idx", -1))
+            next_part_idx = last_part_idx + 1
+            
+            # Write new parts (logic similar to main loop but simplified)
+            if max_messages > 0:
+                for idx in range(0, len(new_messages), max_messages):
+                    part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
+                    _write_part(new_messages[idx : idx + max_messages], part_path)
+                    converted.append(part_path)
+                    next_part_idx += 1
+            else:
+                part_path = os.path.join(OUT_DIR, f"{session_id}.part{next_part_idx:03d}.json")
+                _write_part(new_messages, part_path)
+                converted.append(part_path)
+                next_part_idx += 1
+            
+            # Update state (even though file is deleted, we track progress to avoid reprocessing)
+            # Actually, for deleted files we just mark filename as processed
+            pass
+        
+        processed_deleted.add(filename)
+
+    state["processed_deleted"] = list(processed_deleted)
 
     _save_state(state)
     return converted
