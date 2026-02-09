@@ -77,8 +77,8 @@ def test_deleted_file_without_state():
     """测试2: 没有 state 记录的 .deleted 文件应该从头读取"""
     print("\n=== 测试2: 无状态的 .deleted 文件处理 ===")
     
-    # 创建一个 .deleted 文件
-    session_id = "test-no-state-session"
+    # 创建一个 .deleted 文件 (使用 UUID 格式以通过主会话过滤)
+    session_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
     deleted_filename = f"{session_id}.jsonl.deleted.2026-02-09T10-00-00.000Z"
     deleted_path = os.path.join(SESSIONS_DIR, deleted_filename)
     
@@ -112,7 +112,8 @@ def test_deleted_file_with_existing_parts():
     """测试3: 有 state 记录的 .deleted 文件应该从正确的 part 索引开始"""
     print("\n=== 测试3: 有状态的 .deleted 文件（防覆盖测试）===")
     
-    session_id = "test-with-state-session"
+    # 使用 UUID 格式以通过主会话过滤
+    session_id = "b2c3d4e5-f6a7-8901-bcde-f23456789012"
     
     # 模拟已有 3 个分片
     state = _load_state()
@@ -166,7 +167,8 @@ def test_processed_deleted_tracking():
     """测试4: 已处理的 .deleted 文件不应重复处理"""
     print("\n=== 测试4: 已处理文件跳过逻辑 ===")
     
-    session_id = "test-already-processed"
+    # 使用 UUID 格式以通过主会话过滤
+    session_id = "c3d4e5f6-a7b8-9012-cdef-345678901234"
     deleted_filename = f"{session_id}.jsonl.deleted.2026-02-09T12-00-00.000Z"
     deleted_path = os.path.join(SESSIONS_DIR, deleted_filename)
     
@@ -190,6 +192,78 @@ def test_processed_deleted_tracking():
         return False
 
 
+def test_sub_session_filtering():
+    """测试5: 子会话（非 UUID 格式）应该被过滤掉"""
+    print("\n=== 测试5: 子会话过滤逻辑 ===")
+    
+    # 创建一个子会话文件（非 UUID 格式）
+    sub_session_id = "my-sub-task"
+    sub_filename = f"{sub_session_id}.jsonl.deleted.2026-02-09T13-00-00.000Z"
+    sub_path = os.path.join(SESSIONS_DIR, sub_filename)
+    create_openclaw_jsonl(sub_path, [("user", "Sub task message")])
+    
+    # 同时创建一个主会话文件（UUID 格式）
+    main_session_id = "d4e5f6a7-b8c9-0123-def0-456789012345"
+    main_filename = f"{main_session_id}.jsonl.deleted.2026-02-09T13-00-00.000Z"
+    main_path = os.path.join(SESSIONS_DIR, main_filename)
+    create_openclaw_jsonl(main_path, [("user", "Main session message")])
+    
+    # 运行 convert
+    result = convert(since_ts=None)
+    
+    # 验证：主会话应该被处理，子会话应该被跳过
+    main_processed = any(main_session_id in p for p in result)
+    sub_processed = any(sub_session_id in p for p in result)
+    
+    if main_processed and not sub_processed:
+        print(f"  ✅ 主会话已处理: {main_session_id[:20]}...")
+        print(f"  ✅ 子会话已跳过: {sub_session_id}")
+        return True
+    else:
+        print(f"  ❌ 主会话处理: {main_processed}, 子会话处理: {sub_processed}")
+        return False
+
+
+def test_chronological_ordering():
+    """测试6: .deleted 文件应该按时间从旧到新排序处理"""
+    print("\n=== 测试6: 时间顺序处理 ===")
+    
+    from convert_sessions import _extract_deleted_timestamp
+    
+    # 创建多个不同时间的 .deleted 文件
+    files = [
+        ("e5f6a7b8-c9d0-1234-ef01-567890123456", "2026-02-09T15-00-00.000Z"),  # 最新
+        ("f6a7b8c9-d0e1-2345-f012-678901234567", "2026-02-09T13-00-00.000Z"),  # 中间
+        ("a7b8c9d0-e1f2-3456-0123-789012345678", "2026-02-09T11-00-00.000Z"),  # 最旧
+    ]
+    
+    for sid, ts in files:
+        fn = f"{sid}.jsonl.deleted.{ts}"
+        path = os.path.join(SESSIONS_DIR, fn)
+        create_openclaw_jsonl(path, [("user", f"Message at {ts}")])
+    
+    # 验证排序
+    import glob
+    from convert_sessions import DELETED_GLOB, _is_main_session, _extract_session_id
+    
+    deleted_files = glob.glob(os.path.join(SESSIONS_DIR, "*.jsonl.deleted.*"))
+    # 只取这三个测试文件
+    test_files = [f for f in deleted_files if any(sid in f for sid, _ in files)]
+    test_files.sort(key=lambda p: _extract_deleted_timestamp(os.path.basename(p)))
+    
+    sorted_timestamps = [_extract_deleted_timestamp(os.path.basename(f)) for f in test_files]
+    expected_order = ["2026-02-09T11-00-00.000Z", "2026-02-09T13-00-00.000Z", "2026-02-09T15-00-00.000Z"]
+    
+    if sorted_timestamps == expected_order:
+        print(f"  ✅ 排序正确: 旧→新")
+        for ts in sorted_timestamps:
+            print(f"     {ts}")
+        return True
+    else:
+        print(f"  ❌ 排序错误: {sorted_timestamps}")
+        return False
+
+
 def cleanup():
     """清理测试目录"""
     shutil.rmtree(TEST_DIR, ignore_errors=True)
@@ -207,6 +281,8 @@ def main():
         results.append(("无状态处理", test_deleted_file_without_state()))
         results.append(("防覆盖逻辑", test_deleted_file_with_existing_parts()))
         results.append(("跳过已处理", test_processed_deleted_tracking()))
+        results.append(("子会话过滤", test_sub_session_filtering()))
+        results.append(("时间顺序", test_chronological_ordering()))
     finally:
         cleanup()
     

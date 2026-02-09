@@ -2,6 +2,16 @@ import glob
 import re
 
 SESSION_FILENAME_RE = re.compile(r"^(.+?)\.jsonl(?:\.deleted\.\d{4}-\d{2}-\d{2}T[\d:\-]+(?:\.\d+)?Z?)?$")
+
+# UUID pattern to identify main sessions (vs sub-agent sessions with custom labels)
+UUID_PATTERN = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
+
+# Pattern to extract timestamp from .deleted filename for chronological sorting
+DELETED_TIMESTAMP_RE = re.compile(r'\.deleted\.(\d{4}-\d{2}-\d{2}T[\d\-:.]+Z?)$')
+
 import hashlib
 import json
 import os
@@ -66,6 +76,24 @@ def _extract_session_id(filename: str) -> str | None:
     """Extract session_id from filename, handling both .jsonl and .deleted variants."""
     m = SESSION_FILENAME_RE.match(filename)
     return m.group(1) if m else None
+
+
+def _is_main_session(session_id: str) -> bool:
+    """Check if session_id is a main session (UUID format) vs sub-agent session (custom label).
+    
+    Main sessions use UUID format (e.g., '75fcef11-456c-42d9-beaf-4caa7c5d3eab').
+    Sub-agent sessions use custom labels (e.g., 'verify-prepush', 'my-task-1').
+    """
+    return bool(UUID_PATTERN.match(session_id))
+
+
+def _extract_deleted_timestamp(filename: str) -> str:
+    """Extract timestamp from .deleted filename for chronological sorting.
+    
+    Returns empty string if no timestamp found (will sort to beginning).
+    """
+    m = DELETED_TIMESTAMP_RE.search(filename)
+    return m.group(1) if m else ""
 
 
 def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
@@ -221,11 +249,28 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
+    
+    # Check if sub-agent sessions should be synced (default: only main sessions)
+    sync_sub_sessions = os.getenv("MEMU_SYNC_SUB_SESSIONS", "false").lower() == "true"
 
     state = _load_state()
     sessions_state: dict[str, Any] = state.setdefault("sessions", {})
 
+    # Get all session files and filter/sort them
     session_files = glob.glob(SESSION_GLOB)
+    
+    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
+    if not sync_sub_sessions:
+        filtered_files = []
+        for fp in session_files:
+            sid = _extract_session_id(os.path.basename(fp))
+            if sid and _is_main_session(sid):
+                filtered_files.append(fp)
+        session_files = filtered_files
+    
+    # Sort by mtime (oldest first) to ensure chronological processing
+    session_files.sort(key=lambda p: os.path.getmtime(p))
+    
     converted: list[str] = []
 
     for file_path in session_files:
@@ -498,6 +543,18 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         processed_deleted = existing_deleted
 
     deleted_files = glob.glob(DELETED_GLOB)
+    
+    # Filter: only main sessions (UUID format) unless MEMU_SYNC_SUB_SESSIONS=true
+    if not sync_sub_sessions:
+        filtered_deleted = []
+        for fp in deleted_files:
+            sid = _extract_session_id(os.path.basename(fp))
+            if sid and _is_main_session(sid):
+                filtered_deleted.append(fp)
+        deleted_files = filtered_deleted
+    
+    # Sort by timestamp in filename (oldest first) for chronological processing
+    deleted_files.sort(key=lambda p: _extract_deleted_timestamp(os.path.basename(p)))
     
     # Helper function for writing parts (defined once, not in loop)
     def _write_deleted_part(part_messages: list[dict[str, str]], out_path: str, lang_prefix: str | None) -> None:
