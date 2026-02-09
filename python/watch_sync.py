@@ -40,8 +40,12 @@ def _try_acquire_lock(lock_path: str, stale_seconds: int = 15 * 60):
                         os.kill(pid, 0)
                         return None
                     except ProcessLookupError:
-                        # PID not alive; allow recovery below.
-                        pass
+                        # PID not alive; recover immediately.
+                        try:
+                            os.remove(lock_path)
+                        except FileNotFoundError:
+                            pass
+                        return _try_acquire_lock(lock_path, stale_seconds=stale_seconds)
                     except PermissionError:
                         # Cannot signal it; assume it's alive.
                         return None
