@@ -1,6 +1,8 @@
+import glob
+import hashlib
 import json
 import os
-import glob
+from dataclasses import dataclass
 from typing import Any
 
 # Use env var for flexibility, no default fallback to avoid writing to wrong place
@@ -13,6 +15,12 @@ memu_data_dir = os.getenv("MEMU_DATA_DIR")
 if not memu_data_dir:
     raise ValueError("MEMU_DATA_DIR env var is not set")
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
+
+STATE_PATH = os.path.join(OUT_DIR, "state.json")
+STATE_VERSION = 1
+
+# How many bytes to sample from head/tail to detect mid-file edits.
+SAMPLE_BYTES = 64 * 1024
 
 # Language instruction prefix for memory extraction
 LANGUAGE_INSTRUCTIONS = {
@@ -42,71 +50,428 @@ def _extract_text_parts(content_list: list[dict[str, Any]]) -> str:
     return "\n".join(parts).strip()
 
 
+def _sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
+
+
+def _sha256_file_sample(*, file_path: str, start: int, length: int) -> str:
+    """Hash a slice of the file (best-effort)."""
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(max(0, start))
+            return _sha256_bytes(f.read(max(0, length)))
+    except FileNotFoundError:
+        return ""
+
+
+def _load_state() -> dict[str, Any]:
+    try:
+        with open(STATE_PATH, "r", encoding="utf-8") as f:
+            s = json.load(f)
+        if not isinstance(s, dict):
+            return {"version": STATE_VERSION, "sessions": {}}
+        if s.get("version") != STATE_VERSION:
+            # For now, treat unknown versions as empty.
+            return {"version": STATE_VERSION, "sessions": {}}
+        sessions = s.get("sessions")
+        if not isinstance(sessions, dict):
+            sessions = {}
+        return {"version": STATE_VERSION, "sessions": sessions}
+    except Exception:
+        return {"version": STATE_VERSION, "sessions": {}}
+
+
+def _save_state(state: dict[str, Any]) -> None:
+    os.makedirs(OUT_DIR, exist_ok=True)
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, STATE_PATH)
+
+
+def _part_path(session_id: str, part_idx: int) -> str:
+    return os.path.join(OUT_DIR, f"{session_id}.part{part_idx:03d}.json")
+
+
+def _read_part_messages(part_path: str) -> list[dict[str, str]]:
+    """Return messages in a part file (including system if present)."""
+    with open(part_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        return []
+    msgs: list[dict[str, str]] = []
+    for m in data:
+        if (
+            isinstance(m, dict)
+            and isinstance(m.get("role"), str)
+            and isinstance(m.get("content"), str)
+        ):
+            msgs.append({"role": m["role"], "content": m["content"]})
+    return msgs
+
+
+def _strip_system_prefix(
+    part_messages: list[dict[str, str]], lang_prefix: str | None
+) -> list[dict[str, str]]:
+    if not part_messages:
+        return []
+    if (
+        lang_prefix
+        and part_messages[0].get("role") == "system"
+        and part_messages[0].get("content") == lang_prefix
+    ):
+        return part_messages[1:]
+    return part_messages
+
+
+def _write_part_json(
+    *,
+    part_messages: list[dict[str, str]],
+    out_path: str,
+    lang_prefix: str | None,
+) -> tuple[bool, str]:
+    """Write part file if content differs. Returns (changed, sha256)."""
+    if lang_prefix:
+        payload = [{"role": "system", "content": lang_prefix}, *part_messages]
+    else:
+        payload = part_messages
+
+    encoded = json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+    new_sha = _sha256_bytes(encoded)
+
+    try:
+        with open(out_path, "rb") as f:
+            old_sha = _sha256_bytes(f.read())
+        if old_sha == new_sha:
+            return (False, new_sha)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        # If the existing file is unreadable, overwrite.
+        pass
+
+    with open(out_path, "wb") as f:
+        f.write(encoded)
+    return (True, new_sha)
+
+
+@dataclass
+class _ReadResult:
+    messages: list[dict[str, str]]
+    new_offset: int
+
+
+def _read_messages_from_jsonl(*, file_path: str, start_offset: int) -> _ReadResult:
+    """Read OpenClaw session JSONL from byte offset and extract user/assistant messages.
+
+    Offset advances only to the end of the last *complete* line read. If the file ends
+    with an incomplete JSON line, we do not advance past that line.
+    """
+
+    messages: list[dict[str, str]] = []
+    new_offset = start_offset
+
+    with open(file_path, "rb") as f:
+        f.seek(max(0, start_offset))
+        while True:
+            line_start = f.tell()
+            line = f.readline()
+            if not line:
+                break
+
+            # If the writer is mid-line (no trailing newline) and JSON parsing fails,
+            # keep the offset pinned so we can retry next sync.
+            complete_line = line.endswith(b"\n")
+            try:
+                entry = json.loads(line.decode("utf-8", errors="replace"))
+            except Exception:
+                if not complete_line:
+                    break
+                new_offset = f.tell()
+                continue
+
+            new_offset = f.tell()
+
+            if entry.get("type") != "message":
+                continue
+            msg_obj = entry.get("message", {})
+            role = msg_obj.get("role")
+            content_list = msg_obj.get("content", [])
+            text = _extract_text_parts(content_list)
+            if text and role in ("user", "assistant"):
+                messages.append({"role": role, "content": text})
+
+    return _ReadResult(messages=messages, new_offset=new_offset)
+
+
 def convert(*, since_ts: float | None = None) -> list[str]:
     os.makedirs(OUT_DIR, exist_ok=True)
 
     max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
 
+    state = _load_state()
+    sessions_state: dict[str, Any] = state.setdefault("sessions", {})
+
     session_files = glob.glob(SESSION_GLOB)
     converted: list[str] = []
 
     for file_path in session_files:
-        if since_ts is not None:
-            try:
-                if os.path.getmtime(file_path) <= since_ts:
-                    continue
-            except FileNotFoundError:
-                continue
-
         session_id = os.path.basename(file_path).replace(".jsonl", "")
-        output_path = os.path.join(OUT_DIR, f"{session_id}.json")
+        lang_prefix = _get_language_prefix()
 
-        messages: list[dict[str, str]] = []
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        entry = json.loads(line)
-                    except Exception:
-                        continue
-
-                    if entry.get("type") != "message":
-                        continue
-
-                    msg_obj = entry.get("message", {})
-                    role = msg_obj.get("role")
-                    content_list = msg_obj.get("content", [])
-
-                    text = _extract_text_parts(content_list)
-                    if text and role in ("user", "assistant"):
-                        messages.append({"role": role, "content": text})
+            st = os.stat(file_path)
         except FileNotFoundError:
             continue
 
-        if messages:
-            lang_prefix = _get_language_prefix()
+        prev = (
+            sessions_state.get(session_id) if isinstance(sessions_state, dict) else None
+        )
+        if not isinstance(prev, dict):
+            prev = {}
 
-            def _write_part(part_messages: list[dict[str, str]], out_path: str) -> None:
-                if lang_prefix:
-                    part_messages = [
-                        {"role": "system", "content": lang_prefix},
-                        *part_messages,
-                    ]
-                with open(out_path, "w", encoding="utf-8") as f:
-                    json.dump(part_messages, f, indent=2, ensure_ascii=False)
+        prev_offset = int(prev.get("last_offset", 0) or 0)
+        prev_size = int(prev.get("last_size", 0) or 0)
+        prev_dev = prev.get("device")
+        prev_ino = prev.get("inode")
+        prev_lang = prev.get("lang_prefix")
+        prev_part_count = int(prev.get("part_count", 0) or 0)
+        prev_tail_count = int(prev.get("tail_part_messages", 0) or 0)
+        prev_head_sha = str(prev.get("head_sha256", "") or "")
+        prev_tail_sha = str(prev.get("tail_sha256", "") or "")
 
-            if max_messages > 0 and len(messages) > max_messages:
+        cur_size = int(st.st_size)
+        cur_mtime = float(st.st_mtime)
+        cur_dev = int(getattr(st, "st_dev", 0))
+        cur_ino = int(getattr(st, "st_ino", 0))
+
+        # since_ts is a fast-path hint, but it can miss appends on filesystems with
+        # coarse mtime resolution. If we have state and the file grew past last_offset,
+        # we still process even when mtime <= since_ts.
+        if since_ts is not None and cur_mtime <= since_ts:
+            if not prev or cur_size <= prev_offset:
+                continue
+
+        # Decide whether we can do append-only incremental processing.
+        append_only = True
+        if prev and (prev_dev is not None and prev_ino is not None):
+            if int(prev_dev) != cur_dev or int(prev_ino) != cur_ino:
+                append_only = False
+        if cur_size < prev_offset:
+            append_only = False
+        if prev_lang != lang_prefix:
+            # Changing language instruction changes the conversation payload => rebuild.
+            append_only = False
+
+        # Cheap edit detection: compare head/tail samples from last processed size.
+        if append_only and prev_offset > 0 and (prev_head_sha or prev_tail_sha):
+            head_len = min(SAMPLE_BYTES, cur_size)
+            head_sha = _sha256_file_sample(
+                file_path=file_path, start=0, length=head_len
+            )
+            tail_start = max(0, prev_offset - SAMPLE_BYTES)
+            tail_len = max(0, min(SAMPLE_BYTES, prev_offset - tail_start))
+            tail_sha = _sha256_file_sample(
+                file_path=file_path, start=tail_start, length=tail_len
+            )
+            if (prev_head_sha and head_sha != prev_head_sha) or (
+                prev_tail_sha and tail_sha != prev_tail_sha
+            ):
+                append_only = False
+
+        # If no state or we can't trust append-only, do a full rebuild for this session.
+        if not prev or not append_only:
+            read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
+            messages = read_res.messages
+
+            # Always write parts for incremental stability.
+            new_part_count = 0
+            if max_messages > 0:
                 for idx in range(0, len(messages), max_messages):
                     part_idx = idx // max_messages
-                    part_path = os.path.join(
-                        OUT_DIR, f"{session_id}.part{part_idx:03d}.json"
+                    part_path = _part_path(session_id, part_idx)
+                    changed, _ = _write_part_json(
+                        part_messages=messages[idx : idx + max_messages],
+                        out_path=part_path,
+                        lang_prefix=lang_prefix,
                     )
-                    _write_part(messages[idx : idx + max_messages], part_path)
-                    converted.append(part_path)
+                    new_part_count += 1
+                    if changed:
+                        converted.append(part_path)
             else:
-                _write_part(messages, output_path)
-                converted.append(output_path)
+                # Fallback: single file overwrite mode.
+                out_path = os.path.join(OUT_DIR, f"{session_id}.json")
+                changed, _ = _write_part_json(
+                    part_messages=messages,
+                    out_path=out_path,
+                    lang_prefix=lang_prefix,
+                )
+                new_part_count = 1 if messages else 0
+                if changed:
+                    converted.append(out_path)
 
+            # Remove stale old part files if the session shrank.
+            if (
+                max_messages > 0
+                and prev_part_count
+                and new_part_count < prev_part_count
+            ):
+                for part_idx in range(new_part_count, prev_part_count):
+                    try:
+                        os.remove(_part_path(session_id, part_idx))
+                    except FileNotFoundError:
+                        pass
+                    except Exception:
+                        pass
+
+            # Update state.
+            head_len = min(SAMPLE_BYTES, cur_size)
+            head_sha = _sha256_file_sample(
+                file_path=file_path, start=0, length=head_len
+            )
+            tail_start = max(0, read_res.new_offset - SAMPLE_BYTES)
+            tail_len = max(0, min(SAMPLE_BYTES, read_res.new_offset - tail_start))
+            tail_sha = _sha256_file_sample(
+                file_path=file_path, start=tail_start, length=tail_len
+            )
+
+            tail_count = 0
+            if max_messages > 0 and new_part_count > 0:
+                # Best-effort: count messages in the last part excluding system prefix.
+                try:
+                    last_part_path = _part_path(session_id, new_part_count - 1)
+                    last_msgs = _read_part_messages(last_part_path)
+                    tail_count = len(_strip_system_prefix(last_msgs, lang_prefix))
+                except Exception:
+                    tail_count = 0
+
+            sessions_state[session_id] = {
+                "file_path": file_path,
+                "device": cur_dev,
+                "inode": cur_ino,
+                "last_offset": int(read_res.new_offset),
+                "last_size": cur_size,
+                "last_mtime": cur_mtime,
+                "part_count": int(new_part_count),
+                "tail_part_messages": int(tail_count),
+                "lang_prefix": lang_prefix,
+                "head_sha256": head_sha,
+                "tail_sha256": tail_sha,
+            }
+            continue
+
+        # Append-only: read from previous offset and only update tail/new parts.
+        if cur_size == prev_offset:
+            # No new bytes.
+            continue
+
+        read_res = _read_messages_from_jsonl(
+            file_path=file_path, start_offset=prev_offset
+        )
+        new_messages = read_res.messages
+        if not new_messages and read_res.new_offset == prev_offset:
+            # Likely an incomplete trailing line; try again next sync.
+            continue
+
+        part_count = prev_part_count
+        tail_count = prev_tail_count
+        if max_messages <= 0:
+            # Can't do incremental without parts; overwrite single file.
+            out_path = os.path.join(OUT_DIR, f"{session_id}.json")
+            # Rebuild full messages to avoid inconsistent state.
+            full_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
+            changed, _ = _write_part_json(
+                part_messages=full_res.messages,
+                out_path=out_path,
+                lang_prefix=lang_prefix,
+            )
+            if changed:
+                converted.append(out_path)
+            part_count = 1 if full_res.messages else 0
+            tail_count = len(full_res.messages)
+            prev_offset = 0
+            read_res = full_res
+        else:
+            # Load last part (if any) to append into it until full.
+            if part_count <= 0:
+                part_count = 1
+                tail_count = 0
+
+            last_part_idx = max(0, part_count - 1)
+            last_part_path = _part_path(session_id, last_part_idx)
+            try:
+                existing_part = _read_part_messages(last_part_path)
+                existing_msgs = _strip_system_prefix(existing_part, lang_prefix)
+            except FileNotFoundError:
+                existing_msgs = []
+            except Exception:
+                # If the tail part is corrupted, fall back to full rebuild next time.
+                existing_msgs = []
+
+            # Append into last part (may rewrite it) and then spill into new parts.
+            buf = list(existing_msgs)
+            remain = list(new_messages)
+
+            # Fill tail part up to max_messages.
+            if len(buf) < max_messages and remain:
+                take = min(max_messages - len(buf), len(remain))
+                buf.extend(remain[:take])
+                remain = remain[take:]
+                changed, _ = _write_part_json(
+                    part_messages=buf,
+                    out_path=last_part_path,
+                    lang_prefix=lang_prefix,
+                )
+                if changed:
+                    converted.append(last_part_path)
+
+            # If tail part reached max, subsequent messages go to new parts.
+            if len(buf) >= max_messages:
+                tail_count = max_messages
+            else:
+                tail_count = len(buf)
+
+            while remain:
+                part_idx = part_count
+                chunk = remain[:max_messages]
+                remain = remain[max_messages:]
+                part_path = _part_path(session_id, part_idx)
+                changed, _ = _write_part_json(
+                    part_messages=chunk,
+                    out_path=part_path,
+                    lang_prefix=lang_prefix,
+                )
+                if changed:
+                    converted.append(part_path)
+                part_count += 1
+                tail_count = len(chunk)
+
+        # Update state (advance cursor to last complete line we consumed).
+        head_len = min(SAMPLE_BYTES, cur_size)
+        head_sha = _sha256_file_sample(file_path=file_path, start=0, length=head_len)
+        tail_start = max(0, read_res.new_offset - SAMPLE_BYTES)
+        tail_len = max(0, min(SAMPLE_BYTES, read_res.new_offset - tail_start))
+        tail_sha = _sha256_file_sample(
+            file_path=file_path, start=tail_start, length=tail_len
+        )
+
+        sessions_state[session_id] = {
+            "file_path": file_path,
+            "device": cur_dev,
+            "inode": cur_ino,
+            "last_offset": int(read_res.new_offset),
+            "last_size": cur_size,
+            "last_mtime": cur_mtime,
+            "part_count": int(part_count),
+            "tail_part_messages": int(tail_count),
+            "lang_prefix": lang_prefix,
+            "head_sha256": head_sha,
+            "tail_sha256": tail_sha,
+        }
+
+    _save_state(state)
     return converted
 
 

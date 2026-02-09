@@ -6,6 +6,34 @@ from datetime import datetime
 
 from memu.app.service import MemoryService
 
+import sqlite3
+
+def resource_exists(url: str, user_id: str) -> bool:
+    try:
+        dsn = get_db_dsn()
+        # dsn is sqlite:///path/to/db
+        db_path = dsn.replace("sqlite:///", "")
+        if not os.path.exists(db_path):
+            return False
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='memu_resources'")
+        if not cursor.fetchone():
+            conn.close()
+            return False
+            
+        cursor.execute("SELECT 1 FROM memu_resources WHERE url = ?", (url,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as e:
+        _log(f"DB check failed: {e}")
+        return False
+
+
 
 def _log(msg: str) -> None:
     """Log to both stdout and log file."""
@@ -207,6 +235,11 @@ async def sync_once(user_id: str = "default") -> None:
     timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
 
     for p in converted_paths:
+        # Check if resource already exists to skip re-ingestion
+        if resource_exists(os.path.basename(p), user_id):
+            _log(f"skip existing: {os.path.basename(p)}")
+            continue
+
         try:
             base = os.path.basename(p)
             t0 = time.time()
