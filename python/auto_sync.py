@@ -8,6 +8,7 @@ import json
 from memu.app.service import MemoryService
 
 import sqlite3
+import tempfile
 
 
 def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool:
@@ -84,6 +85,31 @@ from memu.app.settings import (
 )
 
 from convert_sessions import convert
+
+
+def _try_acquire_lock(lock_path: str):
+    """Best-effort non-blocking lock using O_EXCL."""
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(lock_path, flags)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        return fd
+    except FileExistsError:
+        return None
+
+
+def _release_lock(lock_path: str, fd) -> None:
+    try:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
 
 
 def _get_data_dir() -> str:
@@ -260,6 +286,13 @@ def _write_last_sync(ts: float) -> None:
 
 
 async def sync_once(user_id: str = "default") -> None:
+    # Prevent concurrent runs (watcher + manual tool) to avoid duplicated ingestion.
+    lock_name = os.path.join(tempfile.gettempdir(), "memu_sync.lock_auto_sync")
+    lock_fd = _try_acquire_lock(lock_name)
+    if lock_fd is None:
+        _log("auto_sync already running; skip")
+        return
+
     last_sync = _read_last_sync()
     sync_start_ts = time.time()
 
@@ -291,6 +324,7 @@ async def sync_once(user_id: str = "default") -> None:
     if not merged:
         _log("no updated sessions to ingest.")
         _write_last_sync(sync_start_ts)
+        _release_lock(lock_name, lock_fd)
         return
 
     # 2) Ingest converted conversations into memU
@@ -338,6 +372,8 @@ async def sync_once(user_id: str = "default") -> None:
         _write_last_sync(sync_start_ts)
     else:
         _log("sync cursor not advanced due to failures")
+
+    _release_lock(lock_name, lock_fd)
 
 
 if __name__ == "__main__":
