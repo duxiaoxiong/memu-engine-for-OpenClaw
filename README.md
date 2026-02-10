@@ -1,4 +1,4 @@
-# memU Engine for OpenClaw (中文版)
+# memU Engine for OpenClaw
 
 项目链接：
 
@@ -149,10 +149,10 @@ openclaw gateway restart
 
 ---
 
-## 技术原理 (Technical Deep Dive)
+## 技术原理
 
 <details>
-<summary>点击展开：插件对话增量存入逻辑</summary>
+<summary>点击展开：插件对话存入逻辑</summary>
 
 
 1.  **Tail Staging (尾部暂存)**：
@@ -180,8 +180,8 @@ openclaw gateway restart
 ### 会话清洗 (Sanitization)
 在送入 LLM 之前，插件会对原始日志进行深度清洗：
 
-1.  **主会话锁定**：只通过 `sessions.json` 的 ID 锁定主会话，严格隔离子 Agent 和系统日志。
-2.  **去噪**：移除 `NO_REPLY`、`System:` 提示、Tool Calls 等非人类对话内容。
+1.  **主会话锁定**：只通过 `sessions.json` 的 ID 锁定主会话，不录取子agents对话。
+2.  **去噪**：移除 `NO_REPLY`、`System:` 提示、Tool Calls 等非正常对话内容。
 3.  **脱敏**：移除 `message_id`、Telegram ID 等元数据，只保留纯文本内容。
 
 ### 隐私安全
