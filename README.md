@@ -163,14 +163,10 @@ openclaw gateway restart
     *   只有当满足 **Commit 条件**时（满 60 条消息，或闲置 30 分钟），脚本才会把这个 `.tmp` 文件**重命名**为正式的 `partNNN.json`。
 
 3.  **One-Time Ingestion (一次性消费)**：
-    *   MemU 发现新出现的 `partNNN.json`。
+    *   memu-engine 发现新出现的 `partNNN.json`。
     *   它读取一次、分析一次、存入数据库。
-    *   因为这个分片已经“满”了，它永远不会再被修改。MemU 以后再也不用看它了。
+    *   因为这个分片已经“满”了，它永远不会再被修改。memu-engine 以后再也不用看它了。
 
-**结果**：
-*   **Token 消耗降低 90%+**。
-*   **同步速度提升 100x**（毫秒级）。
-*   **数据零重复**。
 
 </details>
 
