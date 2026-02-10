@@ -1,7 +1,7 @@
 {
   "name": "memu-engine",
-  "version": "1.0.0",
-  "description": "> ⚠️ **警告：暂时有性能 Bug** > > 本项目目前存在严重的性能问题，正在紧急修复中。请暂时不要使用。 > > **WARNING: Performance Issues** > > This project currently has severe performance bugs and is under repair. Please do NOT use it for now.",
+  "version": "0.1.0",
+  "description": "Atomic memory engine for OpenClaw powered by MemU. Features immutable parts for zero redundant token cost.",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -10,9 +10,15 @@
     "type": "git",
     "url": "git+https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "memory",
+    "memu",
+    "rag"
+  ],
+  "author": "duxiaoxiong",
+  "license": "Apache-2.0",
   "bugs": {
     "url": "https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/issues"
   },
