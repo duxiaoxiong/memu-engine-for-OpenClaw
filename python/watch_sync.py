@@ -5,6 +5,7 @@ import json
 import tempfile
 import sys
 import signal
+from typing import Optional
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -85,6 +86,48 @@ def get_extra_paths():
         return []
 
 
+def _get_main_session_file() -> Optional[str]:
+    """Best-effort: resolve main session file path from sessions.json."""
+    if not SESSIONS_DIR:
+        return None
+    sessions_json = os.path.join(SESSIONS_DIR, "sessions.json")
+    try:
+        with open(sessions_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        main_id = (data.get("agent:main:main") or {}).get("sessionId")
+        if not main_id:
+            return None
+        p = os.path.join(SESSIONS_DIR, f"{main_id}.jsonl")
+        return p if os.path.exists(p) else None
+    except Exception:
+        return None
+
+
+def _should_run_idle_flush(
+    *,
+    main_session_file: Optional[str],
+    flush_idle_seconds: int,
+    last_flush_check: float,
+) -> bool:
+    """Low-overhead check to avoid needless auto_sync calls.
+
+    We trigger auto_sync only if the main session file has been idle for long enough.
+    """
+    if flush_idle_seconds <= 0:
+        return False
+    if not main_session_file:
+        return False
+    try:
+        mtime = os.path.getmtime(main_session_file)
+    except Exception:
+        return False
+    now = time.time()
+    if now - last_flush_check < 30:
+        # Avoid tight loops if something calls this too frequently.
+        return False
+    return (now - mtime) >= flush_idle_seconds
+
+
 class SyncHandler(FileSystemEventHandler):
     def __init__(self, script_name, extensions):
         self.script_name = script_name
@@ -140,6 +183,14 @@ if __name__ == "__main__":
 
     observer = Observer()
 
+    flush_idle_seconds = int(os.getenv("MEMU_FLUSH_IDLE_SECONDS", "1800") or "1800")
+    flush_poll_seconds = int(os.getenv("MEMU_FLUSH_POLL_SECONDS", "60") or "60")
+    last_flush_check = 0.0
+    last_poll_tick = 0
+    main_session_file = _get_main_session_file()
+
+    session_handler: SyncHandler | None = None
+
     def _shutdown_handler(signum, frame):
         try:
             observer.stop()
@@ -193,6 +244,22 @@ if __name__ == "__main__":
     try:
         while True:
             time.sleep(1)
+            # Periodic idle-flush trigger with minimal overhead:
+            # - does NOT call auto_sync unless the main session file has been idle >= flush_idle_seconds
+            # - re-resolves main session file occasionally in case sessions.json changes
+            if session_handler is not None and flush_poll_seconds > 0:
+                now_i = int(time.time())
+                if now_i % flush_poll_seconds == 0 and now_i != last_poll_tick:
+                    last_poll_tick = now_i
+                    if now_i % (flush_poll_seconds * 10) == 0:
+                        main_session_file = _get_main_session_file()
+                    if _should_run_idle_flush(
+                        main_session_file=main_session_file,
+                        flush_idle_seconds=flush_idle_seconds,
+                        last_flush_check=last_flush_check,
+                    ):
+                        last_flush_check = time.time()
+                        session_handler.trigger_sync()
     except KeyboardInterrupt:
         observer.stop()
     finally:

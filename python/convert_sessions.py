@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,9 +32,30 @@ if not _memu_data_dir:
 memu_data_dir: str = _memu_data_dir
 OUT_DIR = os.path.join(memu_data_dir, "conversations")
 STATE_PATH = os.path.join(OUT_DIR, "state.json")
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 SAMPLE_BYTES = 64 * 1024
+
+# Scheme 3 (tail gating): keep an appendable tail buffer that is NOT ingested until finalized.
+# Finalize when either:
+# - tail reaches max_messages, or
+# - no new messages for FLUSH_IDLE_SECONDS.
+FLUSH_IDLE_SECONDS = int(os.getenv("MEMU_FLUSH_IDLE_SECONDS", "1800") or "1800")
+
+
+def _is_force_flush_enabled() -> bool:
+    """Read force-flush flag dynamically from environment.
+
+    NOTE: convert_sessions is imported by auto_sync, so reading this at import
+    time is error-prone (env may be set later by a wrapper script).
+    """
+    return str(os.getenv("MEMU_FORCE_FLUSH", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+
 
 LANGUAGE_INSTRUCTIONS = {
     "zh": "[Language Context: This conversation is in Chinese. All memory summaries extracted from this conversation must be written in Chinese (中文).]",
@@ -94,7 +116,9 @@ RE_TELEGRAM_FULL = re.compile(
     re.IGNORECASE,
 )
 RE_SYSTEM_LINE = re.compile(r"^System:\s*\[[^\]]+\][^\n]*\n+", re.MULTILINE)
-RE_COMPACTION_LINE = re.compile(r"^.*Compacted \([^)]+\).*Context [^\n]+\n*", re.MULTILINE)
+RE_COMPACTION_LINE = re.compile(
+    r"^.*Compacted \([^)]+\).*Context [^\n]+\n*", re.MULTILINE
+)
 
 
 def _is_system_injected_content(text: str) -> bool:
@@ -196,12 +220,17 @@ def _load_state() -> dict[str, Any]:
     try:
         with open(STATE_PATH, "r", encoding="utf-8") as f:
             s = json.load(f)
-        if s.get("version") != STATE_VERSION:
+        ver = s.get("version")
+        # Migrate v3 -> v4 in-place to avoid reprocessing and (critically) avoid
+        # overwriting already-ingested part files with different chunk sizing.
+        if ver == 3 and STATE_VERSION == 4:
+            return {
+                "version": STATE_VERSION,
+                "sessions": s.get("sessions", {}),
+            }
+        if ver != STATE_VERSION:
             return {"version": STATE_VERSION, "sessions": {}}
-        return {
-            "version": STATE_VERSION,
-            "sessions": s.get("sessions", {}),
-        }
+        return {"version": STATE_VERSION, "sessions": s.get("sessions", {})}
     except Exception:
         return {"version": STATE_VERSION, "sessions": {}}
 
@@ -216,6 +245,10 @@ def _save_state(state: dict[str, Any]) -> None:
 
 def _part_path(session_id: str, part_idx: int) -> str:
     return os.path.join(OUT_DIR, f"{session_id}.part{part_idx:03d}.json")
+
+
+def _tail_tmp_path(session_id: str) -> str:
+    return os.path.join(OUT_DIR, f"{session_id}.tail.tmp.json")
 
 
 def _read_part_messages(part_path: str) -> list[dict[str, str]]:
@@ -349,7 +382,8 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     """Convert the main OpenClaw session to memU conversation format."""
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "120") or "120")
+    # Default to 60 messages per finalized part (Scheme 4).
+    max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "60") or "60")
 
     main_session_id = _get_main_session_id()
     if not main_session_id:
@@ -400,8 +434,31 @@ def convert(*, since_ts: float | None = None) -> list[str]:
     cur_dev = int(getattr(st, "st_dev", 0))
     cur_ino = int(getattr(st, "st_ino", 0))
 
+    def _should_idle_flush(prev_state: dict[str, Any]) -> bool:
+        # If there's a staged tail and it's been idle for long enough, finalize it.
+        tail_count0 = int(prev_state.get("tail_part_messages", 0) or 0)
+        if tail_count0 <= 0:
+            return False
+
+        # Manual override: allow callers (eg. a tool) to force-finalize the staged tail.
+        if _is_force_flush_enabled():
+            return True
+        last_activity = prev_state.get("tail_last_activity_ts")
+        try:
+            last_activity_f = (
+                float(last_activity) if last_activity is not None else None
+            )
+        except Exception:
+            last_activity_f = None
+        if last_activity_f is None:
+            # Fall back to the session file mtime; less precise but avoids starvation.
+            last_activity_f = cur_mtime
+        return (time.time() - last_activity_f) >= FLUSH_IDLE_SECONDS
+
     if since_ts is not None and cur_mtime <= since_ts:
-        if not prev or cur_size <= prev_offset:
+        # Even if the session file hasn't changed, we may still need to finalize a staged tail
+        # after the idle window.
+        if (not prev or cur_size <= prev_offset) and not _should_idle_flush(prev):
             _save_state(state)
             return converted
 
@@ -427,33 +484,120 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         ):
             append_only = False
 
+    def _load_tail_messages() -> list[dict[str, str]]:
+        tail_path = _tail_tmp_path(session_id)
+        try:
+            tail_part = _read_part_messages(tail_path)
+            return _strip_system_prefix(tail_part, lang_prefix)
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
+
+    def _write_tail_messages(msgs: list[dict[str, str]]) -> None:
+        tail_path = _tail_tmp_path(session_id)
+        if not msgs:
+            try:
+                os.remove(tail_path)
+            except FileNotFoundError:
+                pass
+            return
+        _write_part_json(
+            part_messages=msgs, out_path=tail_path, lang_prefix=lang_prefix
+        )
+
+    def _now_ts() -> float:
+        return time.time()
+
+    def _finalize_tail_if_due(
+        *,
+        tail_msgs: list[dict[str, str]],
+        is_idle: bool,
+        part_count_in: int,
+    ) -> tuple[bool, int, list[str]]:
+        """Finalize current tail into an immutable part if flush conditions are met."""
+        if not tail_msgs:
+            return (False, part_count_in, [])
+
+        should_flush = (len(tail_msgs) >= max_messages) or is_idle
+        if not should_flush:
+            return (False, part_count_in, [])
+
+        new_paths: list[str] = []
+        # Flush in fixed-size chunks.
+        buf = list(tail_msgs)
+        while len(buf) >= max_messages:
+            chunk = buf[:max_messages]
+            buf = buf[max_messages:]
+            out_path = _part_path(session_id, part_count_in)
+            changed, _ = _write_part_json(
+                part_messages=chunk, out_path=out_path, lang_prefix=lang_prefix
+            )
+            if changed:
+                new_paths.append(out_path)
+            part_count_in += 1
+
+        # If idle-flush and there is remainder (< max_messages), flush remainder as its own part.
+        if buf and is_idle:
+            out_path = _part_path(session_id, part_count_in)
+            changed, _ = _write_part_json(
+                part_messages=buf, out_path=out_path, lang_prefix=lang_prefix
+            )
+            if changed:
+                new_paths.append(out_path)
+            part_count_in += 1
+            buf = []
+
+        # Update staged tail file.
+        _write_tail_messages(buf)
+        return (True, part_count_in, new_paths)
+
     if not prev or not append_only:
         read_res = _read_messages_from_jsonl(file_path=file_path, start_offset=0)
         messages = read_res.messages
 
+        tail_count = 0
+
         new_part_count = 0
-        if max_messages > 0:
-            for idx in range(0, len(messages), max_messages):
-                part_idx = idx // max_messages
+        if max_messages <= 0:
+            out_path = os.path.join(OUT_DIR, f"{session_id}.json")
+            changed, _ = _write_part_json(
+                part_messages=messages, out_path=out_path, lang_prefix=lang_prefix
+            )
+            new_part_count = 1 if messages else 0
+            if changed:
+                converted.append(out_path)
+        else:
+            # Write only full parts as immutable .partNNN.json
+            full_count = len(messages) // max_messages
+            for part_idx in range(full_count):
+                start = part_idx * max_messages
+                end = start + max_messages
                 part_path = _part_path(session_id, part_idx)
                 changed, _ = _write_part_json(
-                    part_messages=messages[idx : idx + max_messages],
+                    part_messages=messages[start:end],
                     out_path=part_path,
                     lang_prefix=lang_prefix,
                 )
                 new_part_count += 1
                 if changed:
                     converted.append(part_path)
-        else:
-            out_path = os.path.join(OUT_DIR, f"{session_id}.json")
-            changed, _ = _write_part_json(
-                part_messages=messages,
-                out_path=out_path,
-                lang_prefix=lang_prefix,
-            )
-            new_part_count = 1 if messages else 0
-            if changed:
-                converted.append(out_path)
+
+            # Remainder becomes staged tail (NOT ingested until finalized).
+            tail_msgs = messages[full_count * max_messages :]
+            if tail_msgs and _should_idle_flush({"tail_part_messages": len(tail_msgs)}):
+                # Session is already idle; finalize remainder immediately to avoid leaving tail forever.
+                part_path = _part_path(session_id, new_part_count)
+                changed, _ = _write_part_json(
+                    part_messages=tail_msgs, out_path=part_path, lang_prefix=lang_prefix
+                )
+                new_part_count += 1
+                if changed:
+                    converted.append(part_path)
+                tail_msgs = []
+
+            _write_tail_messages(tail_msgs)
+            tail_count = len(tail_msgs)
 
         if max_messages > 0 and prev_part_count and new_part_count < prev_part_count:
             for part_idx in range(new_part_count, prev_part_count):
@@ -470,14 +614,17 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             file_path=file_path, start=tail_start, length=tail_len
         )
 
-        tail_count = 0
-        if max_messages > 0 and new_part_count > 0:
-            try:
-                last_part_path = _part_path(session_id, new_part_count - 1)
-                last_msgs = _read_part_messages(last_part_path)
-                tail_count = len(_strip_system_prefix(last_msgs, lang_prefix))
-            except Exception:
-                tail_count = 0
+        # tail_count already computed for max_messages>0 rebuild; otherwise compute from file.
+        if max_messages <= 0:
+            tail_count = 0
+            if new_part_count > 0:
+                try:
+                    last_msgs = _read_part_messages(
+                        os.path.join(OUT_DIR, f"{session_id}.json")
+                    )
+                    tail_count = len(_strip_system_prefix(last_msgs, lang_prefix))
+                except Exception:
+                    tail_count = 0
 
         sessions_state[session_id] = {
             "file_path": file_path,
@@ -488,6 +635,7 @@ def convert(*, since_ts: float | None = None) -> list[str]:
             "last_mtime": cur_mtime,
             "part_count": int(new_part_count),
             "tail_part_messages": int(tail_count),
+            "tail_last_activity_ts": _now_ts() if tail_count > 0 else None,
             "lang_prefix": lang_prefix,
             "head_sha256": head_sha,
             "tail_sha256": tail_sha,
@@ -496,6 +644,23 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         return converted
 
     if cur_size == prev_offset:
+        # No new bytes. Still allow idle flush of staged tail.
+        if max_messages > 0 and _should_idle_flush(prev):
+            tail_msgs = _load_tail_messages()
+            did, part_count2, new_paths = _finalize_tail_if_due(
+                tail_msgs=tail_msgs,
+                is_idle=True,
+                part_count_in=prev_part_count,
+            )
+            if did:
+                converted.extend(new_paths)
+                prev_part_count = part_count2
+                prev_tail_count = 0
+                sessions_state[session_id] = {
+                    **prev,
+                    "part_count": int(part_count2),
+                    "tail_part_messages": 0,
+                }
         _save_state(state)
         return converted
 
@@ -522,54 +687,38 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         tail_count = len(full_res.messages)
         read_res = full_res
     else:
-        if part_count <= 0:
-            part_count = 1
-            tail_count = 0
+        # Scheme 3: stage all incremental messages in tail.tmp, and only emit finalized parts.
+        tail_buf = _load_tail_messages()
+        tail_buf.extend(new_messages)
 
-        last_part_idx = max(0, part_count - 1)
-        last_part_path = _part_path(session_id, last_part_idx)
-        try:
-            existing_part = _read_part_messages(last_part_path)
-            existing_msgs = _strip_system_prefix(existing_part, lang_prefix)
-        except FileNotFoundError:
-            existing_msgs = []
-        except Exception:
-            existing_msgs = []
-
-        buf = list(existing_msgs)
-        remain = list(new_messages)
-
-        if len(buf) < max_messages and remain:
-            take = min(max_messages - len(buf), len(remain))
-            buf.extend(remain[:take])
-            remain = remain[take:]
+        # Finalize any full chunks immediately; keep remainder staged.
+        while len(tail_buf) >= max_messages:
+            chunk = tail_buf[:max_messages]
+            tail_buf = tail_buf[max_messages:]
+            part_path = _part_path(session_id, part_count)
             changed, _ = _write_part_json(
-                part_messages=buf,
-                out_path=last_part_path,
-                lang_prefix=lang_prefix,
-            )
-            if changed:
-                converted.append(last_part_path)
-
-        if len(buf) >= max_messages:
-            tail_count = max_messages
-        else:
-            tail_count = len(buf)
-
-        while remain:
-            part_idx = part_count
-            chunk = remain[:max_messages]
-            remain = remain[max_messages:]
-            part_path = _part_path(session_id, part_idx)
-            changed, _ = _write_part_json(
-                part_messages=chunk,
-                out_path=part_path,
-                lang_prefix=lang_prefix,
+                part_messages=chunk, out_path=part_path, lang_prefix=lang_prefix
             )
             if changed:
                 converted.append(part_path)
             part_count += 1
-            tail_count = len(chunk)
+
+        # If idle window already exceeded (or manual force flush), flush remainder too.
+        did_flush_idle = bool(tail_buf) and _should_idle_flush(
+            {"tail_part_messages": len(tail_buf)}
+        )
+        if did_flush_idle:
+            part_path = _part_path(session_id, part_count)
+            changed, _ = _write_part_json(
+                part_messages=tail_buf, out_path=part_path, lang_prefix=lang_prefix
+            )
+            if changed:
+                converted.append(part_path)
+            part_count += 1
+            tail_buf = []
+
+        _write_tail_messages(tail_buf)
+        tail_count = len(tail_buf)
 
     head_len = min(SAMPLE_BYTES, cur_size)
     head_sha = _sha256_file_sample(file_path=file_path, start=0, length=head_len)
@@ -588,6 +737,9 @@ def convert(*, since_ts: float | None = None) -> list[str]:
         "last_mtime": cur_mtime,
         "part_count": int(part_count),
         "tail_part_messages": int(tail_count),
+        "tail_last_activity_ts": (
+            prev.get("tail_last_activity_ts") if tail_count > 0 else None
+        ),
         "lang_prefix": lang_prefix,
         "head_sha256": head_sha,
         "tail_sha256": tail_sha,
