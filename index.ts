@@ -294,6 +294,42 @@ const memuEnginePlugin = {
     
     // Trigger auto-start immediately
     triggerAutoStart();
+
+    // ---------------------------------------------------------
+    // 2.1 Optional: auto flush memU on compaction
+    // ---------------------------------------------------------
+    // OpenClaw has an official "memory flush" turn near auto-compaction.
+    // We can optionally finalize our staged tail + ingest into memU after compaction.
+    const registerCompactionFlushHook = () => {
+      const pluginConfig = api.pluginConfig || {};
+      const enabled = (pluginConfig as any)?.flushOnCompaction === true;
+      if (!enabled) return;
+
+      const apiAny = api as any;
+      const hookName = "after_compaction";
+      const handler = async (_event: unknown, ctx: any) => {
+        try {
+          const workspaceDir = ctx?.workspaceDir || process.env.OPENCLAW_WORKSPACE_DIR || process.cwd();
+          await runPython("flush.py", [], pluginConfig, workspaceDir);
+        } catch (e) {
+          console.error(`[memU] after_compaction flush failed: ${e}`);
+        }
+      };
+
+      if (typeof apiAny.on === "function") {
+        apiAny.on(hookName, handler, { priority: -10 });
+        console.log(`[memU] Registered hook: ${hookName} (flushOnCompaction=true)`);
+        return;
+      }
+
+      if (typeof apiAny.registerHook === "function") {
+        apiAny.registerHook(hookName, handler, { name: "memu-engine:after_compaction_flush" });
+        console.log(`[memU] Registered hook via registerHook: ${hookName} (flushOnCompaction=true)`);
+        return;
+      }
+
+      console.warn("[memU] Hook API not available; cannot enable flushOnCompaction");
+    };
     
     // ---------------------------------------------------------
     // 3. Register Tools
@@ -350,12 +386,21 @@ const memuEnginePlugin = {
       });
     };
 
+    // Register hooks after helpers are available.
+    registerCompactionFlushHook();
+
     const searchSchema = {
       type: "object",
       properties: {
         query: { type: "string", description: "Search query" }
       },
       required: ["query"]
+    };
+
+    const flushSchema = {
+      type: "object",
+      properties: {},
+      required: []
     };
 
     const getSchema = {
@@ -432,9 +477,33 @@ const memuEnginePlugin = {
           searchTool("memory_search", "Mandatory recall step: semantically search the memory system."),
           getTool("memu_get", "Retrieve content from memU database or workspace disk."),
           getTool("memory_get", "Read a specific memory Markdown file."),
+          {
+            name: "memory_flush",
+            description: "Force-finalize (freeze) the staged conversation tail and trigger memU ingestion immediately.",
+            parameters: flushSchema,
+            async execute(_toolCallId: string) {
+              const result = await runPython("flush.py", [], pluginConfig, workspaceDir);
+              return {
+                content: [{ type: "text", text: result }],
+                details: { action: "flush" },
+              };
+            },
+          },
+          {
+            name: "memu_flush",
+            description: "Alias of memory_flush.",
+            parameters: flushSchema,
+            async execute(_toolCallId: string) {
+              const result = await runPython("flush.py", [], pluginConfig, workspaceDir);
+              return {
+                content: [{ type: "text", text: result }],
+                details: { action: "flush" },
+              };
+            },
+          },
         ];
       },
-      { names: ["memu_search", "memory_search", "memu_get", "memory_get"] },
+      { names: ["memu_search", "memory_search", "memu_get", "memory_get", "memory_flush", "memu_flush"] },
     );
   }
 };
