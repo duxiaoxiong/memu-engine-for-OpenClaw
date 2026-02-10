@@ -149,22 +149,10 @@ If your local inference service (vLLM, Ollama, LM Studio, etc.) exposes an OpenA
 
 ---
 
-## Technical Deep Dive
+## Technical Principles
 
 <details>
-<summary>Click to expand: How MemU achieves "Zero Redundant Consumption" (Immutable Parts)</summary>
-
-### The Challenge
-Traditional RAG plugins face a huge problem when dealing with "growing chat logs":
-**The Mutable File Problem**
-Every time the user sends a message, the log file grows. If re-indexed every time:
-1.  **Extremely Slow**: Processing a 1MB log can take minutes.
-2.  **Expensive**: The first 99% of content is repeatedly sent to the LLM.
-3.  **Duplication**: Easy to generate duplicate memory points.
-
-### Our Solution: Immutable Parts
-
-This plugin borrows ideas from Database WAL (Write-Ahead Logging) and Git:
+<summary>Click to expand: Plugin Conversation Ingestion Logic</summary>
 
 1.  **Tail Staging**:
     *   Your latest chat content is first written to a **temporary file**: `{sessionId}.tail.tmp.json`.
@@ -174,25 +162,20 @@ This plugin borrows ideas from Database WAL (Write-Ahead Logging) and Git:
     *   Only when **Commit conditions** are met (60 messages or 30 mins idle), the script **renames** the `.tmp` file to a formal `partNNN.json`.
 
 3.  **One-Time Ingestion**:
-    *   MemU detects the new `partNNN.json`.
+    *   memu-engine detects the new `partNNN.json`.
     *   It reads once, analyzes once, and stores in the database.
-    *   Since this part is "full", it will never be modified again. MemU never needs to read it again.
-
-**Results**:
-*   **Token consumption reduced by 90%+**.
-*   **Sync speed increased 100x** (milliseconds).
-*   **Zero data duplication**.
+    *   Since this part is "full", it will never be modified again. memu-engine never needs to read it again.
 
 </details>
 
 <details>
-<summary>Click to expand: Sanitization & Privacy</summary>
+<summary>Click to expand: Session Content Cleaning</summary>
 
 ### Session Sanitization
 Before sending to LLM, the plugin deeply cleans raw logs:
 
-1.  **Main Session Locking**: Only locks main sessions via `sessions.json` ID, strictly isolating sub-agents and system logs.
-2.  **De-noising**: Removes `NO_REPLY`, `System:` prompts, Tool Calls, and other non-human conversation content.
+1.  **Main Session Locking**: Only locks main sessions via `sessions.json` ID; does not record sub-agent conversations.
+2.  **De-noising**: Removes `NO_REPLY`, `System:` prompts, Tool Calls, and other non-normal conversation content.
 3.  **Anonymization**: Removes `message_id`, Telegram IDs, and other metadata, keeping only plain text.
 
 ### Privacy
