@@ -13,6 +13,10 @@ python/.venv/
 dist/
 build/
 
+# Node.js
+node_modules/
+package-lock.json
+
 # Misc
 *.bak
 .DS_Store

@@ -1,0 +1,24 @@
+{
+  "name": "memu-engine",
+  "version": "1.0.0",
+  "description": "> ⚠️ **警告：暂时有性能 Bug** > > 本项目目前存在严重的性能问题，正在紧急修复中。请暂时不要使用。 > > **WARNING: Performance Issues** > > This project currently has severe performance bugs and is under repair. Please do NOT use it for now.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/issues"
+  },
+  "homepage": "https://github.com/duxiaoxiong/memu-engine-for-OpenClaw#readme",
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "typescript": "^5.9.3"
+  }
+}

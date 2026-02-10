@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pathlib
 import shutil
+import hashlib
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -37,7 +38,11 @@ class LocalFS:
             if "type" in query_params:
                 ext = query_params["type"][0]
                 # Generate a filename based on the ID if available
-                filename = f"audio_{query_params['id'][0]}.{ext}" if "id" in query_params else f"resource.{ext}"
+                filename = (
+                    f"audio_{query_params['id'][0]}.{ext}"
+                    if "id" in query_params
+                    else f"resource.{ext}"
+                )
             else:
                 # Use modality to infer extension
                 ext_map = {
@@ -58,7 +63,10 @@ class LocalFS:
         # Local path
         p = pathlib.Path(url)
         if p.exists():
-            dst = self.base / p.name
+            # Avoid collisions for same-named files from different directories.
+            resolved = str(p.resolve())
+            digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:10]
+            dst = self.base / f"{digest}_{p.name}"
             if str(p.resolve()) != str(dst.resolve()):
                 shutil.copyfile(p, dst)
             text = None

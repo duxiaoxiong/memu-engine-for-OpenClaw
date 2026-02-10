@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 import sys
 
 from memu.app.service import MemoryService
@@ -22,6 +23,16 @@ def _env(name: str, default: str | None = None) -> str | None:
     return default
 
 
+def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [row[1] for row in cur.fetchall() if len(row) > 1]
+        return column in set(cols)
+    except Exception:
+        return False
+
+
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
     if not data_dir:
@@ -35,7 +46,7 @@ def get_db_dsn() -> str:
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 
-async def search(query_text: str, user_id: str = "xiaoxiong"):
+async def search(query_text: str, user_id: str = "default"):
     user_id = _env("MEMU_USER_ID", user_id) or user_id
     chat_kwargs = {}
     if p := _env("MEMU_CHAT_PROVIDER"):
@@ -104,28 +115,99 @@ if __name__ == "__main__":
         # Build resource_id -> url lookup
         resource_url_map = {r.get("id"): r.get("url") for r in resources}
 
+        # Ensure we can resolve sources even when `resources` top_k doesn't include the item's resource.
+        # (MemU retrieve can return items without returning their resource objects.)
+        item_resource_ids = {
+            i.get("resource_id")
+            for i in items
+            if isinstance(i, dict) and i.get("resource_id")
+        }
+        missing_ids = [rid for rid in item_resource_ids if rid not in resource_url_map]
+        if missing_ids:
+            try:
+                data_dir = os.getenv("MEMU_DATA_DIR")
+                if data_dir:
+                    db_path = os.path.join(data_dir, "memu.db")
+                    conn = sqlite3.connect(db_path)
+                    cur = conn.cursor()
+                    placeholders = ",".join(["?"] * len(missing_ids))
+                    user_id = _env("MEMU_USER_ID", "default") or "default"
+                    if _db_has_column(conn, table="memu_resources", column="user_id"):
+                        cur.execute(
+                            f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders}) AND user_id = ?",
+                            [*missing_ids, user_id],
+                        )
+                    else:
+                        cur.execute(
+                            f"SELECT id, url FROM memu_resources WHERE id IN ({placeholders})",
+                            missing_ids,
+                        )
+                    for rid, url in cur.fetchall():
+                        resource_url_map[rid] = url
+                    conn.close()
+            except Exception:
+                pass
+
         workspace_dir = _env(
             "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
         )
+        memu_data_dir = _env("MEMU_DATA_DIR", "")
 
-        def to_relative_path(abs_path: str) -> str:
-            """Convert absolute path to workspace-relative path (like OpenClaw official)."""
-            if not abs_path or not abs_path.startswith("/"):
+        extra_paths_json = _env("MEMU_EXTRA_PATHS", "[]")
+        try:
+            import json
+
+            extra_paths: list[str] = (
+                json.loads(extra_paths_json) if extra_paths_json else []
+            )
+        except Exception:
+            extra_paths = []
+
+        def shorten_path(abs_path: str) -> str:
+            """Shorten absolute paths using prefix aliases.
+
+            Conversion rules:
+            - /workspace_dir/... -> ws:...
+            - /extra_paths[i]/... -> ext{i}:...
+            - memU internal paths handled separately
+            """
+            import re
+
+            if not abs_path:
                 return abs_path
-            try:
-                rel = os.path.relpath(abs_path, workspace_dir)
-                if rel.startswith(".."):
-                    return abs_path
-                return rel
-            except ValueError:
-                return abs_path
+
+            for i, ep in enumerate(extra_paths):
+                if abs_path.startswith(ep + "/"):
+                    rel = abs_path[len(ep) + 1 :]
+                    return f"ext{i}:{rel}"
+                if abs_path == ep:
+                    return f"ext{i}:"
+
+            if workspace_dir and abs_path.startswith(workspace_dir + "/"):
+                rel = abs_path[len(workspace_dir) + 1 :]
+                return f"ws:{rel}"
+            if workspace_dir and abs_path == workspace_dir:
+                return "ws:"
+
+            # conversations/UUID.partNNN.json -> conv:UUID[:8]:pN
+            m = re.search(r"conversations/([a-f0-9-]+)\.part(\d+)\.json$", abs_path)
+            if m:
+                return f"conv:{m.group(1)[:8]}:p{int(m.group(2))}"
+            m = re.search(r"conversations/([a-f0-9-]+)\.json$", abs_path)
+            if m:
+                return f"conv:{m.group(1)[:8]}"
+
+            return abs_path
 
         def format_source(url):
             if not url:
                 return None
-            if not url.startswith("/") and not url.startswith("."):
-                return f"memu://{url}"
-            return to_relative_path(url)
+            short = shorten_path(url)
+            if short != url:
+                return f"memu://{short}"
+            if url.startswith("/"):
+                return f"memu://{shorten_path(url)}"
+            return f"memu://{url}"
 
         def get_item_source(item):
             resource_id = item.get("resource_id")
