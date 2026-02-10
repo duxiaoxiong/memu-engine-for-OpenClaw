@@ -221,7 +221,7 @@ const memuEnginePlugin = {
 
       // Write PID file for orphan cleanup
       try {
-        const pidPath = pidFilePath(workspaceDir);
+        const pidPath = pidFilePath(dataDir);
         fs.mkdirSync(path.dirname(pidPath), { recursive: true });
         if (syncProcess.pid) fs.writeFileSync(pidPath, String(syncProcess.pid), "utf-8");
       } catch {
@@ -240,7 +240,7 @@ const memuEnginePlugin = {
         if (syncProcess !== proc) return;
         syncProcess = null;
         try {
-          const pidPath = pidFilePath(workspaceDir);
+          const pidPath = pidFilePath(dataDir);
           if (fs.existsSync(pidPath)) fs.unlinkSync(pidPath);
         } catch {
           // ignore

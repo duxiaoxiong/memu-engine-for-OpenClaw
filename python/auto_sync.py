@@ -88,13 +88,48 @@ from convert_sessions import convert
 
 
 def _try_acquire_lock(lock_path: str):
-    """Best-effort non-blocking lock using O_EXCL."""
+    """Best-effort non-blocking lock using O_EXCL.
+
+    This lock is PID-aware: if a stale lock file is found (PID not running),
+    it will be removed and acquisition will be retried once.
+    """
+
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 1:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Cannot signal, assume alive.
+            return True
+
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(lock_path, flags)
         os.write(fd, str(os.getpid()).encode("utf-8"))
         return fd
     except FileExistsError:
+        # Stale lock handling: if the PID is dead, remove and retry once.
+        try:
+            with open(lock_path, "r", encoding="utf-8") as f:
+                pid_str = f.read().strip()
+            pid = int(pid_str)
+            if not _pid_alive(pid):
+                try:
+                    os.remove(lock_path)
+                except FileNotFoundError:
+                    pass
+                try:
+                    fd = os.open(lock_path, flags)
+                    os.write(fd, str(os.getpid()).encode("utf-8"))
+                    return fd
+                except FileExistsError:
+                    return None
+        except Exception:
+            return None
         return None
 
 
@@ -293,87 +328,89 @@ async def sync_once(user_id: str = "default") -> None:
         _log("auto_sync already running; skip")
         return
 
-    last_sync = _read_last_sync()
-    sync_start_ts = time.time()
+    try:
+        last_sync = _read_last_sync()
+        sync_start_ts = time.time()
 
-    _log(f"sync start. since_ts={last_sync}")
+        _log(f"sync start. since_ts={last_sync}")
 
-    # Load any previously converted-but-not-ingested parts.
-    # This prevents data loss when convert() advances its internal state.json
-    # but downstream memorize() fails mid-batch.
-    pending_paths = _load_pending_ingest()
+        # Load any previously converted-but-not-ingested parts.
+        # This prevents data loss when convert() advances its internal state.json
+        # but downstream memorize() fails mid-batch.
+        pending_paths = _load_pending_ingest()
 
-    # 1) Convert updated OpenClaw session jsonl -> memU JSON resources
-    converted_paths = convert(since_ts=last_sync)
+        # 1) Convert updated OpenClaw session jsonl -> memU JSON resources
+        converted_paths = convert(since_ts=last_sync)
 
-    # Merge (preserve order) and persist pending queue BEFORE ingest.
-    merged: list[str] = []
-    seen: set[str] = set()
-    for p in [*pending_paths, *converted_paths]:
-        if not isinstance(p, str) or not p.strip():
-            continue
-        if p in seen:
-            continue
-        seen.add(p)
-        merged.append(p)
-    _save_pending_ingest(merged)
+        # Merge (preserve order) and persist pending queue BEFORE ingest.
+        merged: list[str] = []
+        seen: set[str] = set()
+        for p in [*pending_paths, *converted_paths]:
+            if not isinstance(p, str) or not p.strip():
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            merged.append(p)
+        _save_pending_ingest(merged)
 
-    _log(f"converted_paths: {len(converted_paths)}")
-    _log(f"pending_paths: {len(merged)}")
+        _log(f"converted_paths: {len(converted_paths)}")
+        _log(f"pending_paths: {len(merged)}")
 
-    if not merged:
-        _log("no updated sessions to ingest.")
-        _write_last_sync(sync_start_ts)
+        if not merged:
+            _log("no updated sessions to ingest.")
+            _write_last_sync(sync_start_ts)
+            return
+
+        # 2) Ingest converted conversations into memU
+        service = build_service()
+
+        ok = 0
+        fail = 0
+
+        timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
+
+        remaining: list[str] = []
+        for p in merged:
+            # Check if resource already exists to skip re-ingestion
+            if resource_exists(p, user_id):
+                _log(f"skip existing: {os.path.basename(p)}")
+                continue
+
+            try:
+                base = os.path.basename(p)
+                t0 = time.time()
+                _log(f"ingest: {base}")
+                await asyncio.wait_for(
+                    service.memorize(
+                        resource_url=p,
+                        modality="conversation",
+                        user={"user_id": user_id},
+                    ),
+                    timeout=timeout_s,
+                )
+                ok += 1
+                _log(f"done: {base} ({time.time() - t0:.1f}s)")
+            except asyncio.TimeoutError:
+                _log(f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s)")
+                fail += 1
+                remaining.append(p)
+            except Exception as e:
+                _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
+                fail += 1
+                remaining.append(p)
+
+        _log(f"sync complete. success={ok}, failed={fail}")
+
+        # Persist remaining queue and advance cursor only when everything is ingested.
+        _save_pending_ingest(remaining)
+
+        if fail == 0:
+            _write_last_sync(sync_start_ts)
+        else:
+            _log("sync cursor not advanced due to failures")
+    finally:
         _release_lock(lock_name, lock_fd)
-        return
-
-    # 2) Ingest converted conversations into memU
-    service = build_service()
-
-    ok = 0
-    fail = 0
-
-    timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
-
-    remaining: list[str] = []
-    for p in merged:
-        # Check if resource already exists to skip re-ingestion
-        if resource_exists(p, user_id):
-            _log(f"skip existing: {os.path.basename(p)}")
-            continue
-
-        try:
-            base = os.path.basename(p)
-            t0 = time.time()
-            _log(f"ingest: {base}")
-            await asyncio.wait_for(
-                service.memorize(
-                    resource_url=p, modality="conversation", user={"user_id": user_id}
-                ),
-                timeout=timeout_s,
-            )
-            ok += 1
-            _log(f"done: {base} ({time.time() - t0:.1f}s)")
-        except asyncio.TimeoutError:
-            _log(f"TIMEOUT: {os.path.basename(p)} (>{timeout_s}s)")
-            fail += 1
-            remaining.append(p)
-        except Exception as e:
-            _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
-            fail += 1
-            remaining.append(p)
-
-    _log(f"sync complete. success={ok}, failed={fail}")
-
-    # Persist remaining queue and advance cursor only when everything is ingested.
-    _save_pending_ingest(remaining)
-
-    if fail == 0:
-        _write_last_sync(sync_start_ts)
-    else:
-        _log("sync cursor not advanced due to failures")
-
-    _release_lock(lock_name, lock_fd)
 
 
 if __name__ == "__main__":
