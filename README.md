@@ -152,19 +152,8 @@ openclaw gateway restart
 ## 技术原理 (Technical Deep Dive)
 
 <details>
-<summary>点击展开：MemU 如何做到“零重复消耗”？(Immutable Parts)</summary>
+<summary>点击展开：插件对话增量存入逻辑</summary>
 
-### 核心挑战
-传统的 RAG 插件在处理“不断增长的聊天日志”时，面临一个巨大难题：
-**Mutable File Problem (可变文件问题)**
-用户每发一句话，日志文件就会变大。如果每次文件变大都重新索引，会导致：
-1.  **极慢**：处理 1MB 的日志可能需要几分钟。
-2.  **极贵**：前面 99% 的内容被反复发送给 LLM 阅读。
-3.  **重复**：容易生成重复的记忆点。
-
-### 我们的解决方案：Immutable Parts (不可变分片)
-
-本插件借鉴了数据库 WAL (Write-Ahead Logging) 和 Git 的思想，实施了以下策略：
 
 1.  **Tail Staging (尾部暂存)**：
     *   你的最新聊天内容首先被写入一个 **临时文件**：`{sessionId}.tail.tmp.json`。
@@ -186,7 +175,7 @@ openclaw gateway restart
 </details>
 
 <details>
-<summary>点击展开：会话清洗与隐私</summary>
+<summary>点击展开：会话内容清洗</summary>
 
 ### 会话清洗 (Sanitization)
 在送入 LLM 之前，插件会对原始日志进行深度清洗：
