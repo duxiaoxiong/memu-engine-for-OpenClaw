@@ -165,6 +165,10 @@ def _get_pending_ingest_path() -> str:
     return os.path.join(_get_data_dir(), "pending_ingest.json")
 
 
+def _get_pending_backoff_path() -> str:
+    return os.path.join(_get_data_dir(), "pending_backoff.json")
+
+
 def _load_pending_ingest() -> list[str]:
     try:
         with open(_get_pending_ingest_path(), "r", encoding="utf-8") as f:
@@ -184,6 +188,37 @@ def _save_pending_ingest(paths: list[str]) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"version": 1, "paths": paths}, f, ensure_ascii=False, indent=2)
     os.replace(tmp, marker)
+
+
+def _load_backoff_state() -> dict:
+    try:
+        with open(_get_pending_backoff_path(), "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {"next_retry_ts": 0.0, "consecutive_rate_limits": 0, "reason": ""}
+
+
+def _save_backoff_state(state: dict) -> None:
+    marker = _get_pending_backoff_path()
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    tmp = marker + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, marker)
+
+
+def _is_rate_limited_error(e: Exception) -> bool:
+    text = f"{type(e).__name__}: {e}".lower()
+    return (
+        "ratelimit" in text
+        or "rate limit" in text
+        or "error code: 429" in text
+        or "'code': '1302'" in text
+        or '"code": "1302"' in text
+    )
 
 
 def get_db_dsn() -> str:
@@ -357,18 +392,40 @@ async def sync_once(user_id: str = "default") -> None:
         _log(f"converted_paths: {len(converted_paths)}")
         _log(f"pending_paths: {len(merged)}")
 
+        backoff = _load_backoff_state()
+        now_ts = time.time()
+        next_retry_ts = float(backoff.get("next_retry_ts", 0.0) or 0.0)
+        if merged and next_retry_ts > now_ts:
+            wait_s = int(next_retry_ts - now_ts)
+            _log(
+                f"backoff active: skip ingest for {wait_s}s (reason={backoff.get('reason', 'rate_limit')})"
+            )
+            return
+
         if not merged:
             _log("no updated sessions to ingest.")
             _write_last_sync(sync_start_ts)
+            _save_backoff_state(
+                {"next_retry_ts": 0.0, "consecutive_rate_limits": 0, "reason": ""}
+            )
             return
 
         # 2) Ingest converted conversations into memU
         service = build_service()
+        _log(
+            "sync llm profiles: "
+            f"chat={_env('MEMU_CHAT_PROVIDER', 'openai')}/{_env('MEMU_CHAT_MODEL', 'unknown')} "
+            f"embed={_env('MEMU_EMBED_PROVIDER', 'openai')}/{_env('MEMU_EMBED_MODEL', 'unknown')}"
+        )
 
         ok = 0
         fail = 0
 
         timeout_s = int(_env("MEMU_MEMORIZE_TIMEOUT_SECONDS", "600") or "600")
+        base_backoff_s = int(_env("MEMU_RATE_LIMIT_BACKOFF_SECONDS", "60") or "60")
+        max_backoff_s = int(_env("MEMU_RATE_LIMIT_BACKOFF_MAX_SECONDS", "900") or "900")
+        consecutive_rate_limits = int(backoff.get("consecutive_rate_limits", 0) or 0)
+        saw_rate_limit = False
 
         remaining: list[str] = []
         for p in merged:
@@ -399,6 +456,8 @@ async def sync_once(user_id: str = "default") -> None:
                 _log(f"ERROR: {os.path.basename(p)} - {type(e).__name__}: {e}")
                 fail += 1
                 remaining.append(p)
+                if _is_rate_limited_error(e):
+                    saw_rate_limit = True
 
         _log(f"sync complete. success={ok}, failed={fail}")
 
@@ -407,8 +466,27 @@ async def sync_once(user_id: str = "default") -> None:
 
         if fail == 0:
             _write_last_sync(sync_start_ts)
+            _save_backoff_state(
+                {"next_retry_ts": 0.0, "consecutive_rate_limits": 0, "reason": ""}
+            )
         else:
             _log("sync cursor not advanced due to failures")
+            if saw_rate_limit:
+                consecutive_rate_limits += 1
+                wait_s = min(
+                    max_backoff_s, base_backoff_s * (2 ** (consecutive_rate_limits - 1))
+                )
+                next_retry_ts = time.time() + wait_s
+                _save_backoff_state(
+                    {
+                        "next_retry_ts": next_retry_ts,
+                        "consecutive_rate_limits": consecutive_rate_limits,
+                        "reason": "rate_limit",
+                    }
+                )
+                _log(
+                    f"rate-limit backoff set: {wait_s}s (attempt={consecutive_rate_limits}, next_retry_ts={next_retry_ts})"
+                )
     finally:
         _release_lock(lock_name, lock_fd)
 

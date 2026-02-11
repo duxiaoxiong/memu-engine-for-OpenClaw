@@ -2,6 +2,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { execFileSync } from "node:child_process";
 
 const memuEnginePlugin = {
   id: "memu-engine",
@@ -88,6 +90,104 @@ const memuEnginePlugin = {
       return candidates[0];
     };
 
+    const getRetrievalConfig = (
+      pluginConfig: any
+    ): {
+      mode: "fast" | "full";
+      contextMessages: number;
+      defaultCategoryQuota: number | null;
+      defaultItemQuota: number | null;
+      outputMode: "compact" | "full";
+    } => {
+      const retrieval = pluginConfig?.retrieval || {};
+      const rawMode = typeof retrieval.mode === "string" ? retrieval.mode.toLowerCase() : "fast";
+      const mode: "fast" | "full" = rawMode === "full" ? "full" : "fast";
+      const rawOutputMode = typeof retrieval.outputMode === "string" ? retrieval.outputMode.toLowerCase() : "compact";
+      const outputMode: "compact" | "full" = rawOutputMode === "full" ? "full" : "compact";
+      const rawContext = Number(retrieval.contextMessages);
+      const contextMessages = Number.isFinite(rawContext) ? Math.max(0, Math.min(20, Math.trunc(rawContext))) : 3;
+      const rawDefaultCategory = Number(retrieval.defaultCategoryQuota);
+      const rawDefaultItem = Number(retrieval.defaultItemQuota);
+      const defaultCategoryQuota = Number.isFinite(rawDefaultCategory)
+        ? Math.max(0, Math.trunc(rawDefaultCategory))
+        : null;
+      const defaultItemQuota = Number.isFinite(rawDefaultItem)
+        ? Math.max(0, Math.trunc(rawDefaultItem))
+        : null;
+      return { mode, contextMessages, defaultCategoryQuota, defaultItemQuota, outputMode };
+    };
+
+    const extractTextContent = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      const parts: string[] = [];
+      for (const item of content as Array<{ type?: string; text?: string }>) {
+        if (item && item.type === "text" && typeof item.text === "string" && item.text.trim()) {
+          parts.push(item.text);
+        }
+      }
+      return parts.join("\n").trim();
+    };
+
+    const getRecentSessionMessages = (sessionDir: string, maxMessages: number): Array<{ role: "user" | "assistant"; content: string }> => {
+      if (maxMessages <= 0) return [];
+      try {
+        let sessionId: string | undefined;
+        const sessionsMetaPath = path.join(sessionDir, "sessions.json");
+        if (fs.existsSync(sessionsMetaPath)) {
+          try {
+            const raw = fs.readFileSync(sessionsMetaPath, "utf-8");
+            const parsed = JSON.parse(raw) as Record<string, { sessionId?: string }>;
+            sessionId = parsed?.["agent:main:main"]?.sessionId;
+            if (!sessionId) {
+              const first = Object.values(parsed || {}).find((v) => typeof v?.sessionId === "string" && v.sessionId);
+              sessionId = first?.sessionId;
+            }
+          } catch {
+            sessionId = undefined;
+          }
+        }
+
+        let sessionFile = sessionId ? path.join(sessionDir, `${sessionId}.jsonl`) : "";
+        if (!sessionFile || !fs.existsSync(sessionFile)) {
+          const candidates = fs
+            .readdirSync(sessionDir)
+            .filter((f) => f.endsWith(".jsonl"))
+            .map((f) => {
+              const full = path.join(sessionDir, f);
+              const st = fs.statSync(full);
+              return { full, mtimeMs: st.mtimeMs };
+            })
+            .sort((a, b) => b.mtimeMs - a.mtimeMs);
+          sessionFile = candidates[0]?.full || "";
+        }
+
+        if (!sessionFile || !fs.existsSync(sessionFile)) return [];
+        const lines = fs.readFileSync(sessionFile, "utf-8").split("\n").filter(Boolean);
+        const out: Array<{ role: "user" | "assistant"; content: string }> = [];
+        for (const line of lines) {
+          try {
+            const evt = JSON.parse(line) as {
+              type?: string;
+              message?: { role?: string; content?: unknown };
+            };
+            if (evt?.type !== "message") continue;
+            const role = evt?.message?.role;
+            if (role !== "user" && role !== "assistant") continue;
+            const text = extractTextContent(evt?.message?.content);
+            if (!text) continue;
+            out.push({ role, content: text });
+          } catch {
+            continue;
+          }
+        }
+
+        return out.slice(-maxMessages);
+      } catch {
+        return [];
+      }
+    };
+
     const getMemuDataDir = (pluginConfig: any): string => {
       // Priority: pluginConfig.dataDir > env > default
       const fromConfig = pluginConfig?.dataDir;
@@ -107,15 +207,27 @@ const memuEnginePlugin = {
     const pidFilePath = (dataDir: string) =>
       path.join(dataDir, "watch_sync.pid");
 
-    const stopSyncService = (dataDir: string) => {
-      isShuttingDown = true;
+    let stopInProgressUntil = 0;
 
-      if (syncProcess && syncProcess.pid) {
+    const killSyncPid = (pid: number) => {
+      if (!Number.isFinite(pid) || pid <= 1) return;
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
         try {
-          syncProcess.kill();
+          process.kill(pid, "SIGTERM");
         } catch {
           // ignore
         }
+      }
+    };
+
+    const stopSyncService = (dataDir: string) => {
+      isShuttingDown = true;
+      stopInProgressUntil = Date.now() + 8000;
+
+      if (syncProcess && syncProcess.pid) {
+        killSyncPid(syncProcess.pid);
         syncProcess = null;
       }
 
@@ -124,14 +236,25 @@ const memuEnginePlugin = {
         if (fs.existsSync(pidPath)) {
           const pidStr = fs.readFileSync(pidPath, "utf-8").trim();
           const pid = Number(pidStr);
-          if (Number.isFinite(pid) && pid > 1) {
-            try {
-              process.kill(pid);
-            } catch {
-              // ignore
-            }
-          }
+          killSyncPid(pid);
           fs.unlinkSync(pidPath);
+        }
+      } catch {
+        // ignore
+      }
+
+      const scriptPath = path.join(pythonRoot, "watch_sync.py");
+      try {
+        execFileSync("pkill", ["-f", scriptPath], { stdio: "ignore" });
+      } catch {
+        // ignore
+      }
+
+      try {
+        const lockPath = path.join(os.tmpdir(), "memu_sync.lock_watch_sync");
+        if (fs.existsSync(lockPath)) {
+          const pid = Number(fs.readFileSync(lockPath, "utf-8").trim());
+          killSyncPid(pid);
         }
       } catch {
         // ignore
@@ -173,12 +296,8 @@ const memuEnginePlugin = {
       lastDataDirForCleanup = dataDir;
       installShutdownHooksOnce();
 
-      stopSyncService(dataDir);
-
       const embeddingConfig = pluginConfig.embedding || {};
       const extractionConfig = pluginConfig.extraction || {};
-      const ingestConfig = pluginConfig.ingest || {};
-
       const extraPaths = computeExtraPaths(pluginConfig, workspaceDir);
       const userId = getUserId(pluginConfig);
       const sessionDir = getSessionDir();
@@ -212,7 +331,7 @@ const memuEnginePlugin = {
       const proc = spawn("uv", ["run", "--project", pythonRoot, "python", scriptPath], {
         cwd: pythonRoot,
         env,
-        stdio: "pipe" // Capture logs
+        stdio: "pipe",
       });
 
       syncProcess = proc;
@@ -235,7 +354,7 @@ const memuEnginePlugin = {
       });
       proc.stderr?.on("data", (d) => console.error(`[memU Sync Error] ${d}`));
 
-      proc.on("close", (code) => {
+      proc.on("close", (code, signal) => {
         // Ignore stale close events from an old process instance.
         if (syncProcess !== proc) return;
         syncProcess = null;
@@ -245,6 +364,20 @@ const memuEnginePlugin = {
         } catch {
           // ignore
         }
+        if (isShuttingDown || Date.now() < stopInProgressUntil) return;
+
+        if (code === 0 || signal === "SIGTERM" || signal === "SIGINT" || signal === "SIGKILL") {
+          console.log(
+            `[memU] Sync service exited normally (code ${code ?? "null"}, signal ${signal ?? "none"}).`
+          );
+          return;
+        }
+
+        if (code === null && !signal) {
+          console.log("[memU] Sync service exited without code/signal; skip restart.");
+          return;
+        }
+
         if (!isShuttingDown) {
           console.warn(`[memU] Sync service crashed (code ${code}). Restarting in 5s...`);
           setTimeout(() => startSyncService(pluginConfig, workspaceDir), 5000);
@@ -259,10 +392,34 @@ const memuEnginePlugin = {
     // We use setImmediate to start the service after registration completes.
     // This ensures sync starts immediately when gateway loads, not on first tool call.
     
+    const getGatewayManagementCommand = (): "stop" | "restart" | "status" | "health" | null => {
+      const argv = process.argv.slice(2).map((v) => String(v).toLowerCase());
+      if (!argv.includes("gateway")) return null;
+      const mgmt: Array<"stop" | "restart" | "status" | "health"> = ["stop", "restart", "status", "health"];
+      for (const c of mgmt) {
+        if (argv.includes(c)) return c;
+      }
+      return null;
+    };
+
     let autoStartTriggered = false;
     const triggerAutoStart = () => {
       if (autoStartTriggered) return;
       autoStartTriggered = true;
+
+      const mgmtCmd = getGatewayManagementCommand();
+      if (mgmtCmd) {
+        if (mgmtCmd === "stop" || mgmtCmd === "restart") {
+          try {
+            const pluginConfig = api.pluginConfig || {};
+            stopSyncService(getMemuDataDir(pluginConfig));
+          } catch {
+            // ignore
+          }
+        }
+        console.log("[memU] Skipping auto-start for gateway management command.");
+        return;
+      }
       
       // Defer to next tick to ensure plugin is fully registered
       setImmediate(() => {
@@ -346,6 +503,8 @@ const memuEnginePlugin = {
 
       const embeddingConfig = pluginConfig.embedding || {};
       const extractionConfig = pluginConfig.extraction || {};
+      const extraPaths = computeExtraPaths(pluginConfig, workspaceDir);
+      const sessionDir = getSessionDir();
       const userId = getUserId(pluginConfig);
       
       const env = {
@@ -365,6 +524,8 @@ const memuEnginePlugin = {
 
         MEMU_DATA_DIR: getMemuDataDir(pluginConfig),
         MEMU_WORKSPACE_DIR: workspaceDir,
+        MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
+        OPENCLAW_SESSIONS_DIR: sessionDir,
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
       };
 
@@ -392,23 +553,27 @@ const memuEnginePlugin = {
     const searchSchema = {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search query" }
+        query: { type: "string", description: "Search query" },
+        maxResults: { type: "integer", description: "Maximum number of results to return." },
+        minScore: { type: "number", description: "Minimum relevance score (0.0 to 1.0)." },
+        categoryQuota: { type: "integer", description: "Preferred number of category results." },
+        itemQuota: { type: "integer", description: "Preferred number of item results." },
       },
-      required: ["query"]
+      required: ["query"],
     };
 
     const flushSchema = {
       type: "object",
       properties: {},
-      required: []
+      required: [],
     };
 
     const getSchema = {
       type: "object",
       properties: {
         path: { type: "string", description: "Path to the memory file or memU resource URL." },
-        offset: { type: "integer", description: "Start line (0-based). Only for file paths." },
-        limit: { type: "integer", description: "Number of lines to read. Only for file paths." },
+        from: { type: "integer", description: "Start line (1-based)." },
+        lines: { type: "integer", description: "Number of lines to read." },
       },
       required: ["path"],
     };
@@ -423,7 +588,13 @@ const memuEnginePlugin = {
           description,
           parameters: searchSchema,
           async execute(_toolCallId: string, params: unknown) {
-            const { query } = params as { query?: string };
+            const { query, maxResults, minScore, categoryQuota, itemQuota } = params as {
+              query?: string;
+              maxResults?: number;
+              minScore?: number;
+              categoryQuota?: number;
+              itemQuota?: number;
+            };
             if (!query) {
               return {
                 content: [{ type: "text", text: "Missing required parameter: query" }],
@@ -431,10 +602,80 @@ const memuEnginePlugin = {
               };
             }
 
-            const result = await runPython("search.py", [query], pluginConfig, workspaceDir);
+            const retrievalCfg = getRetrievalConfig(pluginConfig);
+            let contextCount = 0;
+            const args: string[] = [query, "--mode", retrievalCfg.mode];
+            if (typeof maxResults === "number" && Number.isFinite(maxResults)) {
+              args.push("--max-results", String(Math.trunc(maxResults)));
+            }
+            if (typeof minScore === "number" && Number.isFinite(minScore)) {
+              args.push("--min-score", String(minScore));
+            }
+            if (typeof categoryQuota === "number" && Number.isFinite(categoryQuota)) {
+              args.push("--category-quota", String(Math.trunc(categoryQuota)));
+            } else if (retrievalCfg.defaultCategoryQuota !== null) {
+              args.push("--category-quota", String(retrievalCfg.defaultCategoryQuota));
+            }
+            if (typeof itemQuota === "number" && Number.isFinite(itemQuota)) {
+              args.push("--item-quota", String(Math.trunc(itemQuota)));
+            } else if (retrievalCfg.defaultItemQuota !== null) {
+              args.push("--item-quota", String(retrievalCfg.defaultItemQuota));
+            }
+            if (retrievalCfg.mode === "full") {
+              const sessionDir = getSessionDir();
+              const history = getRecentSessionMessages(sessionDir, retrievalCfg.contextMessages);
+              contextCount = history.length;
+              const queries = [...history, { role: "user" as const, content: query }];
+              args.push("--queries-json", JSON.stringify(queries));
+            }
+
+            const result = await runPython("search.py", args, pluginConfig, workspaceDir);
+            let payload: string;
+            let parsedForDetails: any = null;
+            try {
+              const parsed = JSON.parse(result);
+              parsedForDetails = parsed;
+              if (retrievalCfg.outputMode === "full") {
+                payload = JSON.stringify(parsed);
+              } else {
+                const compactResults = Array.isArray(parsed?.results)
+                  ? parsed.results.map((r: any) => ({
+                      path: r?.path,
+                      snippet: r?.snippet,
+                    }))
+                  : [];
+                payload = JSON.stringify({ results: compactResults });
+              }
+            } catch {
+              payload = JSON.stringify({
+                results: [],
+                provider: "openai",
+                model: "unknown",
+                fallback: null,
+                citations: "off",
+                error: result,
+              });
+            }
             return {
-              content: [{ type: "text", text: `--- [memU Retrieval System] ---\n${result}` }],
-              details: { query },
+              content: [{ type: "text", text: payload }],
+              details: {
+                query,
+                maxResults,
+                minScore,
+                categoryQuota,
+                itemQuota,
+                defaultCategoryQuota: retrievalCfg.defaultCategoryQuota,
+                defaultItemQuota: retrievalCfg.defaultItemQuota,
+                mode: retrievalCfg.mode,
+                outputMode: retrievalCfg.outputMode,
+                contextCount,
+                contextMessages: retrievalCfg.contextMessages,
+                resultCount: Array.isArray(parsedForDetails?.results)
+                  ? parsedForDetails.results.length
+                  : undefined,
+                provider: parsedForDetails?.provider,
+                model: parsedForDetails?.model,
+              },
             };
           },
         });
@@ -444,10 +685,10 @@ const memuEnginePlugin = {
           description,
           parameters: getSchema,
           async execute(_toolCallId: string, params: unknown) {
-            const { path: memoryPath, offset, limit } = params as {
+            const { path: memoryPath, from, lines } = params as {
               path?: string;
-              offset?: number;
-              limit?: number;
+              from?: number;
+              lines?: number;
             };
             if (!memoryPath) {
               return {
@@ -457,16 +698,27 @@ const memuEnginePlugin = {
             }
 
             const args: string[] = [memoryPath];
-            if (typeof offset === "number" && Number.isFinite(offset)) {
-              args.push("--offset", String(Math.trunc(offset)));
+            if (typeof from === "number" && Number.isFinite(from)) {
+              args.push("--from", String(Math.trunc(from)));
             }
-            if (typeof limit === "number" && Number.isFinite(limit)) {
-              args.push("--limit", String(Math.trunc(limit)));
+            if (typeof lines === "number" && Number.isFinite(lines)) {
+              args.push("--lines", String(Math.trunc(lines)));
             }
 
             const result = await runPython("get.py", args, pluginConfig, workspaceDir);
+            let payload: string;
+            try {
+              const parsed = JSON.parse(result);
+              payload = JSON.stringify(parsed);
+            } catch {
+              payload = JSON.stringify({
+                path: memoryPath,
+                text: "",
+                error: result,
+              });
+            }
             return {
-              content: [{ type: "text", text: result }],
+              content: [{ type: "text", text: payload }],
               details: { path: memoryPath },
             };
           },

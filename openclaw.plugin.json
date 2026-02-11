@@ -29,6 +29,40 @@
           }
         },
         "additionalProperties": true
+      },
+      "retrieval": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["fast", "full"],
+            "default": "fast",
+            "description": "Retrieval mode. fast: vector-only retrieval without LLM sufficiency checks. full: memU progressive retrieval with route_intention and sufficiency checks."
+          },
+          "contextMessages": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 3,
+            "description": "When mode=full, number of recent chat messages to pass as retrieval context before current query."
+          },
+          "defaultCategoryQuota": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Default category result quota for memory_search when categoryQuota is not provided in tool call."
+          },
+          "defaultItemQuota": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Default item result quota for memory_search when itemQuota is not provided in tool call."
+          },
+          "outputMode": {
+            "type": "string",
+            "enum": ["compact", "full"],
+            "default": "compact",
+            "description": "Tool output mode for memory_search. compact: returns minimal fields for model context. full: returns full JSON envelope including scores/model metadata."
+          }
+        },
+        "additionalProperties": true
       }
     }
   }

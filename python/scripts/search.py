@@ -2,6 +2,9 @@ import asyncio
 import os
 import sqlite3
 import sys
+import json
+import argparse
+import re
 
 from memu.app.service import MemoryService
 from memu.app.settings import (
@@ -16,7 +19,6 @@ from memu.app.settings import (
 
 
 def _env(name: str, default: str | None = None) -> str | None:
-    # Try actual environment first
     v = os.getenv(name)
     if v is not None and str(v).strip():
         return v
@@ -36,17 +38,24 @@ def _db_has_column(conn: sqlite3.Connection, *, table: str, column: str) -> bool
 def get_db_dsn() -> str:
     data_dir = os.getenv("MEMU_DATA_DIR")
     if not data_dir:
-        # Fallback for standalone dev: use local 'data' dir
         base = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         )
         data_dir = os.path.join(base, "data")
-
     os.makedirs(data_dir, exist_ok=True)
     return f"sqlite:///{os.path.join(data_dir, 'memu.db')}"
 
 
-async def search(query_text: str, user_id: str = "default"):
+async def search(
+    query_text: str,
+    max_results: int = 10,
+    min_score: float = 0.0,
+    user_id: str = "default",
+    mode: str = "fast",
+    category_quota: int | None = None,
+    item_quota: int | None = None,
+    queries: list[dict] | None = None,
+):
     user_id = _env("MEMU_USER_ID", user_id) or user_id
     chat_kwargs = {}
     if p := _env("MEMU_CHAT_PROVIDER"):
@@ -76,14 +85,19 @@ async def search(query_text: str, user_id: str = "default"):
         )
     )
 
-    # Always query DB; keep results small to avoid context explosion.
+    retrieval_mode = (mode or "fast").strip().lower()
+    if retrieval_mode not in ("fast", "full"):
+        retrieval_mode = "fast"
+
+    route_intention = retrieval_mode == "full"
+    sufficiency_check = retrieval_mode == "full"
+
     retr_config = RetrieveConfig(
-        route_intention=False,
-        item=RetrieveItemConfig(enabled=True, top_k=8),
-        category=RetrieveCategoryConfig(
-            enabled=True, top_k=2
-        ),  # Reduced for conciseness
-        resource=RetrieveResourceConfig(enabled=True, top_k=3),
+        route_intention=route_intention,
+        sufficiency_check=sufficiency_check,
+        item=RetrieveItemConfig(enabled=True, top_k=max_results),
+        category=RetrieveCategoryConfig(enabled=True, top_k=min(5, max_results)),
+        resource=RetrieveResourceConfig(enabled=True, top_k=min(5, max_results)),
     )
 
     service = MemoryService(
@@ -92,31 +106,113 @@ async def search(query_text: str, user_id: str = "default"):
         retrieve_config=retr_config,
     )
 
+    effective_queries = queries or [{"role": "user", "content": query_text}]
+    if not effective_queries:
+        effective_queries = [{"role": "user", "content": query_text}]
+
     results = await service.retrieve(
-        queries=[{"role": "user", "content": query_text}],
+        queries=effective_queries,
         where={"user_id": user_id},
     )
     return results
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: search.py <query>")
-        sys.exit(1)
+def shorten_path(abs_path: str, workspace_dir: str, extra_paths: list[str]) -> str:
+    if not abs_path:
+        return abs_path
 
-    query = sys.argv[1]
+    for i, ep in enumerate(extra_paths):
+        if abs_path.startswith(ep + "/"):
+            rel = abs_path[len(ep) + 1 :]
+            return f"ext{i}:{rel}"
+        if abs_path == ep:
+            return f"ext{i}:"
+
+    if workspace_dir and abs_path.startswith(workspace_dir + "/"):
+        rel = abs_path[len(workspace_dir) + 1 :]
+        return f"ws:{rel}"
+    if workspace_dir and abs_path == workspace_dir:
+        return "ws:"
+
+    m = re.search(r"conversations/([a-f0-9-]+)\.part(\d+)\.json$", abs_path)
+    if m:
+        return f"conv:{m.group(1)[:8]}:p{int(m.group(2))}"
+    m = re.search(r"conversations/([a-f0-9-]+)\.json$", abs_path)
+    if m:
+        return f"conv:{m.group(1)[:8]}"
+
+    return abs_path
+
+
+def format_source(url, workspace_dir, extra_paths):
+    if not url:
+        return None
+    short = shorten_path(url, workspace_dir, extra_paths)
+    if short != url:
+        return f"memu://{short}"
+    if url.startswith("/"):
+        return f"memu://{short}"
+    return f"memu://{url}"
+
+
+def normalize_snippet(text: str) -> str:
+    if not text:
+        return ""
+    s = text.strip().lower()
+    s = re.sub(r"\s+", "", s)
+    s = re.sub(r"[^\w\u4e00-\u9fff]", "", s)
+    return s
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("query", help="Search query")
+    parser.add_argument("--max-results", type=int, default=10)
+    parser.add_argument("--min-score", type=float, default=0.0)
+    parser.add_argument("--category-quota", type=int, default=None)
+    parser.add_argument("--item-quota", type=int, default=None)
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="fast",
+        choices=["fast", "full"],
+        help="Retrieval mode: fast (vector-focused) or full (memU progressive LLM checks).",
+    )
+    parser.add_argument(
+        "--queries-json",
+        type=str,
+        default="",
+        help="Optional JSON array of chat messages for memU context-aware retrieval.",
+    )
+    args = parser.parse_args()
+
     try:
-        res = asyncio.run(search(query))
+        query_messages = None
+        if args.queries_json:
+            try:
+                parsed = json.loads(args.queries_json)
+                if isinstance(parsed, list):
+                    query_messages = parsed
+            except Exception:
+                query_messages = None
+
+        res = asyncio.run(
+            search(
+                args.query,
+                args.max_results,
+                args.min_score,
+                mode=args.mode,
+                category_quota=args.category_quota,
+                item_quota=args.item_quota,
+                queries=query_messages,
+            )
+        )
 
         items = res.get("items", [])
         cats = res.get("categories", [])
         resources = res.get("resources", [])
 
-        # Build resource_id -> url lookup
         resource_url_map = {r.get("id"): r.get("url") for r in resources}
-
-        # Ensure we can resolve sources even when `resources` top_k doesn't include the item's resource.
-        # (MemU retrieve can return items without returning their resource objects.)
         item_resource_ids = {
             i.get("resource_id")
             for i in items
@@ -151,91 +247,141 @@ if __name__ == "__main__":
         workspace_dir = _env(
             "MEMU_WORKSPACE_DIR", os.path.expanduser("~/.openclaw/workspace")
         )
-        memu_data_dir = _env("MEMU_DATA_DIR", "")
-
         extra_paths_json = _env("MEMU_EXTRA_PATHS", "[]")
         try:
-            import json
-
-            extra_paths: list[str] = (
-                json.loads(extra_paths_json) if extra_paths_json else []
-            )
+            extra_paths = json.loads(extra_paths_json) if extra_paths_json else []
         except Exception:
             extra_paths = []
 
-        def shorten_path(abs_path: str) -> str:
-            """Shorten absolute paths using prefix aliases.
+        output_results = []
+        SNIPPET_BUDGET = 4000
+        SNIPPET_MAX = 700
 
-            Conversion rules:
-            - /workspace_dir/... -> ws:...
-            - /extra_paths[i]/... -> ext{i}:...
-            - memU internal paths handled separately
-            """
-            import re
+        category_quota = args.category_quota
+        item_quota = args.item_quota
 
-            if not abs_path:
-                return abs_path
+        if category_quota is None and item_quota is None:
+            if args.max_results >= 10:
+                category_quota = 3 if args.max_results <= 10 else 4
+            elif args.max_results >= 6:
+                category_quota = 2
+            else:
+                category_quota = 1
+            category_quota = min(category_quota, args.max_results)
+            item_quota = max(0, args.max_results - category_quota)
+        else:
+            category_quota = 0 if category_quota is None else max(0, category_quota)
+            item_quota = 0 if item_quota is None else max(0, item_quota)
+            total_quota = category_quota + item_quota
+            if total_quota == 0:
+                category_quota = min(1, args.max_results)
+                item_quota = max(0, args.max_results - category_quota)
+            elif total_quota > args.max_results:
+                scale = args.max_results / total_quota
+                category_quota = int(category_quota * scale)
+                item_quota = int(item_quota * scale)
+                while category_quota + item_quota < args.max_results:
+                    if category_quota <= item_quota:
+                        category_quota += 1
+                    else:
+                        item_quota += 1
 
-            for i, ep in enumerate(extra_paths):
-                if abs_path.startswith(ep + "/"):
-                    rel = abs_path[len(ep) + 1 :]
-                    return f"ext{i}:{rel}"
-                if abs_path == ep:
-                    return f"ext{i}:"
+        filtered_cats = [c for c in cats if c.get("score", 0.0) >= args.min_score]
+        filtered_items = [i for i in items if i.get("score", 0.0) >= args.min_score]
+        filtered_cats.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        filtered_items.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
-            if workspace_dir and abs_path.startswith(workspace_dir + "/"):
-                rel = abs_path[len(workspace_dir) + 1 :]
-                return f"ws:{rel}"
-            if workspace_dir and abs_path == workspace_dir:
-                return "ws:"
+        seen_norm_snippets = set()
 
-            # conversations/UUID.partNNN.json -> conv:UUID[:8]:pN
-            m = re.search(r"conversations/([a-f0-9-]+)\.part(\d+)\.json$", abs_path)
-            if m:
-                return f"conv:{m.group(1)[:8]}:p{int(m.group(2))}"
-            m = re.search(r"conversations/([a-f0-9-]+)\.json$", abs_path)
-            if m:
-                return f"conv:{m.group(1)[:8]}"
+        selected_cats = filtered_cats[:category_quota]
+        selected_items = filtered_items[:item_quota]
 
-            return abs_path
+        for c in selected_cats:
+            score = c.get("score", 0.0)
+            snippet = c.get("summary", "")[:SNIPPET_MAX]
+            norm = normalize_snippet(snippet)
+            if not norm or norm in seen_norm_snippets:
+                continue
+            seen_norm_snippets.add(norm)
 
-        def format_source(url):
-            if not url:
-                return None
-            short = shorten_path(url)
-            if short != url:
-                return f"memu://{short}"
-            if url.startswith("/"):
-                return f"memu://{shorten_path(url)}"
-            return f"memu://{url}"
+            cat_id = c.get("id") or c.get("name", "unknown")
+            output_results.append(
+                {
+                    "path": f"memu://category/{cat_id}",
+                    "startLine": 1,
+                    "endLine": 1,
+                    "score": score,
+                    "snippet": snippet,
+                    "source": "memory",
+                }
+            )
 
-        def get_item_source(item):
-            resource_id = item.get("resource_id")
-            return resource_url_map.get(resource_id) if resource_id else None
+        for i in selected_items:
+            score = i.get("score", 0.0)
+            url = resource_url_map.get(i.get("resource_id"))
+            item_id = i.get("id") or "unknown"
+            path = (
+                format_source(url, workspace_dir, extra_paths)
+                or f"memu://item/{item_id}"
+            )
 
-        # 1. Print Header
-        print("--- [memU Retrieval System] ---")
+            snippet = i.get("summary", "")[:SNIPPET_MAX]
+            norm = normalize_snippet(snippet)
+            if not norm or norm in seen_norm_snippets:
+                continue
+            seen_norm_snippets.add(norm)
 
-        # 2. Print Category Summaries (Primary Insight)
-        if cats:
-            print(f"--- Category Summaries for: {query} ---")
-            for c in cats:
-                name = c.get("name", "General")
-                summary = c.get("summary", "")
-                print(f"- Category [{name}]: {summary}")
+            output_results.append(
+                {
+                    "path": path,
+                    "startLine": 1,
+                    "endLine": 1,
+                    "score": score,
+                    "snippet": snippet,
+                    "source": "memory",
+                }
+            )
 
-        # 3. Print Atomic Items (Detailed Evidence)
-        if items:
-            print(f"\n--- Detailed Memories for: {query} ---")
-            for i in items:
-                mtype = i.get("memory_type", "fact")
-                summary = i.get("summary", "")
-                url = get_item_source(i)
-                source_part = f" (Source: {format_source(url)})" if url else ""
-                print(f"- [{mtype}]: {summary}{source_part}")
+        output_results = output_results[: args.max_results]
 
-        if not items and not cats:
-            print("No relevant memories found in database.")
+        trimmed_results = []
+        remaining = SNIPPET_BUDGET
+        for r in output_results:
+            if remaining <= 0:
+                break
+            snippet = r.get("snippet", "")
+            if len(snippet) > remaining:
+                snippet = snippet[:remaining]
+            if not snippet:
+                continue
+            r = {**r, "snippet": snippet}
+            trimmed_results.append(r)
+            remaining -= len(snippet)
+
+        print(
+            json.dumps(
+                {
+                    "results": trimmed_results,
+                    "provider": _env("MEMU_CHAT_PROVIDER", "openai") or "openai",
+                    "model": _env("MEMU_CHAT_MODEL", "unknown") or "unknown",
+                    "fallback": None,
+                    "citations": "off",
+                },
+                ensure_ascii=False,
+            )
+        )
 
     except Exception as e:
-        print(f"Search failed: {e}")
+        print(
+            json.dumps(
+                {
+                    "results": [],
+                    "provider": _env("MEMU_CHAT_PROVIDER", "openai") or "openai",
+                    "model": _env("MEMU_CHAT_MODEL", "unknown") or "unknown",
+                    "fallback": None,
+                    "citations": "off",
+                    "error": str(e),
+                },
+                ensure_ascii=False,
+            )
+        )
