@@ -209,7 +209,9 @@ class SyncHandler(FileSystemEventHandler):
         self.script_name = script_name
         self.extensions = extensions
         self.last_run = 0
-        self.debounce_seconds = 5
+        self.debounce_seconds = int(
+            os.getenv("MEMU_SYNC_DEBOUNCE_SECONDS", "20") or "20"
+        )
         self.should_trigger = should_trigger
 
     def on_modified(self, event):

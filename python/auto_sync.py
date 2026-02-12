@@ -169,6 +169,10 @@ def _get_pending_backoff_path() -> str:
     return os.path.join(_get_data_dir(), "pending_backoff.json")
 
 
+def _get_empty_sync_log_marker_path() -> str:
+    return os.path.join(_get_data_dir(), "empty_sync_log.marker")
+
+
 def _load_pending_ingest() -> list[str]:
     try:
         with open(_get_pending_ingest_path(), "r", encoding="utf-8") as f:
@@ -208,6 +212,31 @@ def _save_backoff_state(state: dict) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
     os.replace(tmp, marker)
+
+
+def _should_log_empty_sync() -> bool:
+    interval = int(_env("MEMU_EMPTY_SYNC_LOG_INTERVAL_SECONDS", "300") or "300")
+    if interval <= 0:
+        return True
+
+    marker = _get_empty_sync_log_marker_path()
+    now_ts = time.time()
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            last = float((f.read() or "0").strip())
+        if now_ts - last < interval:
+            return False
+    except Exception:
+        pass
+
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write(str(now_ts))
+    except Exception:
+        pass
+
+    return True
 
 
 def _is_rate_limited_error(e: Exception) -> bool:
@@ -367,8 +396,6 @@ async def sync_once(user_id: str = "default") -> None:
         last_sync = _read_last_sync()
         sync_start_ts = time.time()
 
-        _log(f"sync start. since_ts={last_sync}")
-
         # Load any previously converted-but-not-ingested parts.
         # This prevents data loss when convert() advances its internal state.json
         # but downstream memorize() fails mid-batch.
@@ -389,12 +416,14 @@ async def sync_once(user_id: str = "default") -> None:
             merged.append(p)
         _save_pending_ingest(merged)
 
-        _log(f"converted_paths: {len(converted_paths)}")
-        _log(f"pending_paths: {len(merged)}")
-
         backoff = _load_backoff_state()
         now_ts = time.time()
         next_retry_ts = float(backoff.get("next_retry_ts", 0.0) or 0.0)
+
+        _log(f"sync start. since_ts={last_sync}")
+        _log(f"converted_paths: {len(converted_paths)}")
+        _log(f"pending_paths: {len(merged)}")
+
         if merged and next_retry_ts > now_ts:
             wait_s = int(next_retry_ts - now_ts)
             _log(
@@ -403,7 +432,8 @@ async def sync_once(user_id: str = "default") -> None:
             return
 
         if not merged:
-            _log("no updated sessions to ingest.")
+            if _should_log_empty_sync():
+                _log("no updated sessions to ingest.")
             _write_last_sync(sync_start_ts)
             _save_backoff_state(
                 {"next_retry_ts": 0.0, "consecutive_rate_limits": 0, "reason": ""}
