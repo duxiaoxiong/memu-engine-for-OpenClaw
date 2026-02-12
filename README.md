@@ -9,6 +9,15 @@ Language:
 
 - [Chinese (中文)](README_ZH.md)
 
+## 0.2.1 Update (quick notes)
+
+- `memory_search` now supports **compact output** (default) to reduce model token usage.
+- Added retrieval controls in config: `mode` (`fast`/`full`), `contextMessages`, `defaultCategoryQuota`, `defaultItemQuota`, `outputMode`.
+- Sync service is more stable on gateway stop/restart.
+- Added rate-limit backoff for sync retries and reduced empty-run log noise.
+
+For full parameter docs (defaults, optional fields, precedence), see: **[MEMU_PARAMETERS.md](MEMU_PARAMETERS.md)**
+
 ## Introduction
 
 `memu-engine` is an OpenClaw memory plugin designed to bring MemU's powerful atomic memory capabilities to OpenClaw.
@@ -84,7 +93,15 @@ Below is a complete configuration example with parameter explanations. It is rec
               "/home/you/project/README.md"
             ]
           },
-          // 6. Performance Optimization (Immutable Parts)
+          // 6. Retrieval Behavior
+          "retrieval": {
+            "mode": "fast",               // fast | full
+            "contextMessages": 3,          // used in full mode
+            "defaultCategoryQuota": 3,     // default category results
+            "defaultItemQuota": 7,         // default item results
+            "outputMode": "compact"       // compact | full
+          },
+          // 7. Performance Optimization (Immutable Parts)
           "flushIdleSeconds": 1800, // Flush part after 30 mins of inactivity
           "maxMessagesPerPart": 60  // Flush part after 60 messages
         }
@@ -130,7 +147,18 @@ Configures which additional Markdown documents to ingest besides session logs.
     *   Supports directory paths (recursively scans all `*.md` files).
     *   **Limitation**: Currently restricted to Markdown format only.
 
-### 6. Performance Optimization (Immutable Parts)
+### 6. `retrieval` (Search behavior)
+
+Controls how `memory_search` behaves.
+
+*   **`mode`**: `fast` (lower latency) or `full` (MemU progressive decision path).
+*   **`contextMessages`**: how many recent chat messages to inject in `full` mode.
+*   **`defaultCategoryQuota` / `defaultItemQuota`**: default category/item counts when tool call does not pass quotas.
+*   **`outputMode`**: `compact` (model-facing minimal fields) or `full` (full envelope with score/model metadata).
+
+> Full details, defaults, and precedence rules: **[MEMU_PARAMETERS.md](MEMU_PARAMETERS.md)**
+
+### 7. Performance Optimization (Immutable Parts)
 This plugin uses an "Immutable Parts" strategy to prevent repeated token consumption.
 
 *   **`flushIdleSeconds`** (int): Default `1800` (30 mins). If a session is idle for this long, the staged chat tail (`.tail.tmp`) is "frozen" into a permanent part and written to MemU.

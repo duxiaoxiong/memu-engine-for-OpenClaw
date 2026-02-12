@@ -9,6 +9,15 @@
 
 - [English](README.md)
 
+## 0.2.1 更新（简要）
+
+- `memory_search` 默认改为 **compact 输出**，减少主模型读取的冗余字段。
+- 新增检索配置：`mode`（`fast`/`full`）、`contextMessages`、`defaultCategoryQuota`、`defaultItemQuota`、`outputMode`。
+- 网关 stop/restart 时同步进程生命周期更稳定。
+- 同步新增限流退避（backoff），并降低空跑日志噪音。
+
+完整参数说明（默认值/可选项/优先级）见：**[MEMU_PARAMETERS.md](MEMU_PARAMETERS.md)**
+
 ## 简介
 
 `memu-engine` 是一个 OpenClaw 记忆插件，旨在将 MemU 强大的原子化记忆能力带给 OpenClaw。
@@ -84,7 +93,15 @@ openclaw gateway restart
               "/home/you/project/README.md"
             ]
           },
-          // 6. 性能优化参数 (Immutable Parts)
+          // 6. 检索行为配置
+          "retrieval": {
+            "mode": "fast",               // fast | full
+            "contextMessages": 3,          // full 模式下注入最近消息数
+            "defaultCategoryQuota": 3,     // 默认 category 条数
+            "defaultItemQuota": 7,         // 默认 item 条数
+            "outputMode": "compact"       // compact | full
+          },
+          // 7. 性能优化参数 (Immutable Parts)
           "flushIdleSeconds": 1800, // 30分钟无对话则固化分片
           "maxMessagesPerPart": 60  // 满60条则固化分片
         }
@@ -130,7 +147,18 @@ openclaw gateway restart
     *   支持目录路径（递归扫描目录下的所有 `*.md` 文件）。
     *   **限制**：目前仅限制 Markdown 格式。
 
-### 6. 性能优化参数 (Immutable Parts)
+### 6. `retrieval`（检索行为）
+
+用于控制 `memory_search` 的行为。
+
+*   **`mode`**：`fast`（更快）或 `full`（启用 MemU 渐进判断链路）。
+*   **`contextMessages`**：`full` 模式下注入的最近消息数量。
+*   **`defaultCategoryQuota` / `defaultItemQuota`**：调用未显式传 quota 时的默认条数。
+*   **`outputMode`**：`compact`（给模型的精简输出）或 `full`（完整 envelope）。
+
+> 详细规则（默认值、优先级、可选项）见：**[MEMU_PARAMETERS.md](MEMU_PARAMETERS.md)**
+
+### 7. 性能优化参数 (Immutable Parts)
 本插件采用“不可变分片”策略来防止重复消耗 Token。
 
 *   **`flushIdleSeconds`** (int): 默认 `1800` (30分钟)。如果一个会话闲置超过此时间，暂存的聊天尾巴 (`.tail.tmp`) 会被“固化”为永久分片并写入 MemU。
