@@ -26,6 +26,23 @@
             "items": { "type": "string" },
             "default": [],
             "description": "Extra directories/files to ingest Markdown from."
+          },
+          "filterScheduledSystemMessages": {
+            "type": "boolean",
+            "default": true,
+            "description": "Filter large system-injected scheduled payloads (e.g., cron-delivered reports) before conversion to memU conversations."
+          },
+          "scheduledSystemMode": {
+            "type": "string",
+            "enum": ["event", "drop", "keep"],
+            "default": "event",
+            "description": "How to handle matched scheduled system payloads: event (keep compact event marker), drop (remove), keep (original behavior)."
+          },
+          "scheduledSystemMinChars": {
+            "type": "integer",
+            "minimum": 64,
+            "default": 500,
+            "description": "Minimum message length to classify a system envelope as a scheduled payload candidate."
           }
         },
         "additionalProperties": true

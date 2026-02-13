@@ -302,6 +302,7 @@ const memuEnginePlugin = {
       const userId = getUserId(pluginConfig);
       const sessionDir = getSessionDir();
       
+      const ingestConfig = pluginConfig.ingest || {};
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
@@ -321,6 +322,16 @@ const memuEnginePlugin = {
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
         OPENCLAW_SESSIONS_DIR: sessionDir,
+        MEMU_FILTER_SCHEDULED_SYSTEM_MESSAGES:
+          ingestConfig.filterScheduledSystemMessages === false ? "false" : "true",
+        MEMU_SCHEDULED_SYSTEM_MODE:
+          typeof ingestConfig.scheduledSystemMode === "string"
+            ? ingestConfig.scheduledSystemMode
+            : "event",
+        MEMU_SCHEDULED_SYSTEM_MIN_CHARS:
+          Number.isFinite(Number(ingestConfig.scheduledSystemMinChars))
+            ? String(Math.max(64, Math.trunc(Number(ingestConfig.scheduledSystemMinChars))))
+            : "500",
       };
 
       const scriptPath = path.join(pythonRoot, "watch_sync.py");
@@ -507,6 +518,7 @@ const memuEnginePlugin = {
       const sessionDir = getSessionDir();
       const userId = getUserId(pluginConfig);
       
+      const ingestConfig = pluginConfig.ingest || {};
       const env = {
         ...process.env,
         PYTHONIOENCODING: "utf-8",
@@ -527,6 +539,16 @@ const memuEnginePlugin = {
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         OPENCLAW_SESSIONS_DIR: sessionDir,
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
+        MEMU_FILTER_SCHEDULED_SYSTEM_MESSAGES:
+          ingestConfig.filterScheduledSystemMessages === false ? "false" : "true",
+        MEMU_SCHEDULED_SYSTEM_MODE:
+          typeof ingestConfig.scheduledSystemMode === "string"
+            ? ingestConfig.scheduledSystemMode
+            : "event",
+        MEMU_SCHEDULED_SYSTEM_MIN_CHARS:
+          Number.isFinite(Number(ingestConfig.scheduledSystemMinChars))
+            ? String(Math.max(64, Math.trunc(Number(ingestConfig.scheduledSystemMinChars))))
+            : "500",
       };
 
       return new Promise((resolve) => {

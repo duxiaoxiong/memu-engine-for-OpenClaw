@@ -91,6 +91,10 @@ def _get_main_session_id() -> str | None:
 RE_NO_REPLY = re.compile(r"\bNO_REPLY\b\W*$")
 RE_TOOL_INVOKE = re.compile(r"^Call the tool \w+ with .*\.$")
 RE_SYSTEM_PREFIX = re.compile(r"^System:\s*\[")
+RE_SYSTEM_ENVELOPE = re.compile(
+    r"^System:\s*\[[^\]]+\]\s*([A-Za-z][\w\- ]{1,40}):\s*(.*)$",
+    re.DOTALL,
+)
 
 # Directive patterns (assistant responses to slash commands)
 DIRECTIVE_PATTERNS = [
@@ -174,8 +178,56 @@ def _is_system_injected_entry(entry: dict) -> bool:
     return False
 
 
+def _handle_scheduled_system_payload(text: str) -> str:
+    """Handle long system envelopes (e.g., scheduled cron payloads) in a generic way.
+
+    Controlled by env vars:
+      - MEMU_FILTER_SCHEDULED_SYSTEM_MESSAGES: true|false (default true)
+      - MEMU_SCHEDULED_SYSTEM_MODE: event|drop|keep (default event)
+      - MEMU_SCHEDULED_SYSTEM_MIN_CHARS: int (default 500)
+    """
+    enabled = str(os.getenv("MEMU_FILTER_SCHEDULED_SYSTEM_MESSAGES", "true")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+    if not enabled:
+        return text
+
+    m = RE_SYSTEM_ENVELOPE.match(text.strip())
+    if not m:
+        return text
+
+    event_name = (m.group(1) or "System").strip()
+    body = (m.group(2) or "").strip()
+
+    try:
+        min_chars = int(os.getenv("MEMU_SCHEDULED_SYSTEM_MIN_CHARS", "500") or "500")
+    except Exception:
+        min_chars = 500
+    min_chars = max(64, min_chars)
+
+    # Only treat as scheduled payload when body is large enough.
+    if len(body) < min_chars:
+        return text
+
+    mode = str(os.getenv("MEMU_SCHEDULED_SYSTEM_MODE", "event")).strip().lower()
+    if mode == "keep":
+        return text
+    if mode == "drop":
+        return ""
+
+    # default: event
+    return f"[System event: {event_name} delivered]"
+
+
 def _clean_message_text(text: str) -> str:
     """Remove metadata tags and normalize formatting for memory storage."""
+    if not text:
+        return ""
+
+    text = _handle_scheduled_system_payload(text)
     if not text:
         return ""
 
