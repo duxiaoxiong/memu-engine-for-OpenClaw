@@ -105,6 +105,33 @@ Used by memory extraction and full-mode decision checks.
 - **Default**: `[]`
 - **Meaning**: additional directories/files to ingest.
 
+#### `ingest.filterScheduledSystemMessages`
+
+- **Type**: `boolean`
+- **Optional**: Yes
+- **Default**: `true`
+- **Meaning**: when enabled, filters large system-injected scheduled payloads (for example cron-delivered long reports) before converting session logs into memU conversation parts.
+
+#### `ingest.scheduledSystemMode`
+
+- **Type**: `"event" | "drop" | "keep"`
+- **Optional**: Yes
+- **Default**: `"event"`
+- **Meaning**:
+  - `event`: replace matched payload with a compact event marker (recommended default)
+  - `drop`: remove matched payload entirely
+  - `keep`: keep original behavior (no conversion-time reduction for these payloads)
+
+#### `ingest.scheduledSystemMinChars`
+
+- **Type**: `integer`
+- **Optional**: Yes
+- **Default**: `500`
+- **Minimum**: `64`
+- **Meaning**: minimum payload length for classifying a system envelope as a scheduled payload candidate.
+
+> Design note: this filtering is intentionally generic (structure/size based), not tied to any specific keyword list, so it can be safely used in public/general-purpose plugin deployments.
+
 ---
 
 ### 1.5 `config.retrieval`
@@ -293,7 +320,10 @@ If explicit quotas exceed `maxResults`, quotas are scaled down to fit.
           },
           "ingest": {
             "includeDefaultPaths": true,
-            "extraPaths": []
+            "extraPaths": [],
+            "filterScheduledSystemMessages": true,
+            "scheduledSystemMode": "event",
+            "scheduledSystemMinChars": 500
           },
           "retrieval": {
             "mode": "fast",
