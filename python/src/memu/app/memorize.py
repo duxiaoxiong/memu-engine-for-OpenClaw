@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import pathlib
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -923,6 +924,16 @@ class MemorizeMixin:
         self, text: str, template: str, llm_client: Any | None = None
     ) -> list[dict[str, str | None]]:
         """Preprocess document data - condense and extract caption"""
+        # Guard against oversized documents exceeding LLM context window.
+        # OCR/converted docs can tokenize at ~1.3 chars/token (noisy text),
+        # so use a conservative limit. Default 80k chars keeps most models safe.
+        max_chars = int(os.environ.get("MEMU_PREPROCESS_MAX_CHARS", "80000"))
+        if len(text) > max_chars:
+            logger.warning(
+                "Document too large for preprocessing (%d chars), truncating to %d",
+                len(text), max_chars,
+            )
+            text = text[:max_chars] + "\n\n[... document truncated for processing ...]"
         prompt = template.format(document_text=self._escape_prompt_value(text))
         client = llm_client or self._get_llm_client()
         processed = await client.chat(prompt)
