@@ -539,6 +539,7 @@ const memuEnginePlugin = {
         MEMU_EXTRA_PATHS: JSON.stringify(extraPaths),
         OPENCLAW_SESSIONS_DIR: sessionDir,
         MEMU_OUTPUT_LANG: pluginConfig.language || "auto",
+        MEMU_DEBUG_TIMING: (pluginConfig as any)?.debugTiming === true ? "true" : "false",
         MEMU_FILTER_SCHEDULED_SYSTEM_MESSAGES:
           ingestConfig.filterScheduledSystemMessages === false ? "false" : "true",
         MEMU_SCHEDULED_SYSTEM_MODE:

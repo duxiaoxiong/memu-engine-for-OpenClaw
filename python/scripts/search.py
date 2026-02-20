@@ -5,6 +5,7 @@ import sys
 import json
 import argparse
 import re
+import time
 
 from memu.app.service import MemoryService
 from memu.app.settings import (
@@ -100,20 +101,37 @@ async def search(
         resource=RetrieveResourceConfig(enabled=True, top_k=min(5, max_results)),
     )
 
+    t0 = time.perf_counter()
     service = MemoryService(
         llm_profiles={"default": chat_config, "embedding": embed_config},
         database_config=db_config,
         retrieve_config=retr_config,
     )
+    t1 = time.perf_counter()
 
     effective_queries = queries or [{"role": "user", "content": query_text}]
     if not effective_queries:
         effective_queries = [{"role": "user", "content": query_text}]
 
+    t2 = time.perf_counter()
     results = await service.retrieve(
         queries=effective_queries,
         where={"user_id": user_id},
     )
+    t3 = time.perf_counter()
+
+    if (_env("MEMU_DEBUG_TIMING", "false") or "").lower() == "true":
+        timing = {
+            "init_ms": round((t1 - t0) * 1000, 2),
+            "pre_retrieve_ms": round((t2 - t1) * 1000, 2),
+            "retrieve_ms": round((t3 - t2) * 1000, 2),
+            "total_ms": round((t3 - t0) * 1000, 2),
+            "mode": retrieval_mode,
+            "max_results": max_results,
+        }
+        if isinstance(results, dict):
+            results["_timing"] = timing
+
     return results
 
 
