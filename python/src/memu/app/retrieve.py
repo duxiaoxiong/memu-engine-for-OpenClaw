@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
@@ -20,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from memu.app.service import Context
+    from memu.app.settings import DatabaseConfig
     from memu.app.settings import RetrieveConfig
     from memu.database.interfaces import Database
 
@@ -27,6 +31,7 @@ if TYPE_CHECKING:
 class RetrieveMixin:
     if TYPE_CHECKING:
         retrieve_config: RetrieveConfig
+        database_config: DatabaseConfig
         _run_workflow: Callable[..., Awaitable[WorkflowState]]
         _get_context: Callable[[], Context]
         _get_database: Callable[[], Database]
@@ -350,20 +355,29 @@ class RetrieveMixin:
 
         store = state["store"]
         where_filters = state.get("where") or {}
-        items_pool = store.memory_item_repo.list_items(where_filters)
         qvec = state.get("query_vector")
         if qvec is None:
             embed_client = self._get_step_embedding_client(step_context)
             qvec = (await embed_client.embed([state["active_query"]]))[0]
             state["query_vector"] = qvec
-        state["item_hits"] = store.memory_item_repo.vector_search_items(
+        item_hits = store.memory_item_repo.vector_search_items(
             qvec,
             self.retrieve_config.item.top_k,
             where=where_filters,
             ranking=self.retrieve_config.item.ranking,
             recency_decay_days=self.retrieve_config.item.recency_decay_days,
         )
-        state["item_pool"] = items_pool
+        state["item_hits"] = item_hits
+
+        # Build a small pool from hit IDs only. For SQLite this reuses the cache
+        # already populated during vector search and avoids a second full scan.
+        hit_ids = [item_id for item_id, _score in item_hits]
+        item_pool: dict[str, Any] = {}
+        for item_id in hit_ids:
+            item = store.memory_item_repo.get_item(item_id)
+            if item is not None:
+                item_pool[item_id] = item
+        state["item_pool"] = item_pool
         return state
 
     async def _rag_item_sufficiency(self, state: WorkflowState, step_context: Any) -> WorkflowState:
@@ -735,13 +749,88 @@ class RetrieveMixin:
         entries = [(cid, cat.summary) for cid, cat in category_pool.items() if cat.summary]
         if not entries:
             return [], {}
-        summary_texts = [summary for _, summary in entries]
-        client = embed_client or self._get_llm_client()
-        summary_embeddings = await client.embed(summary_texts)
-        corpus = [(cid, emb) for (cid, _), emb in zip(entries, summary_embeddings, strict=True)]
-        hits = cosine_topk(query_vec, corpus, k=top_k)
+
+        cache = self._load_category_summary_embedding_cache()
         summary_lookup = dict(entries)
+        summary_embeddings_by_id: dict[str, list[float]] = {}
+        missing_ids: list[str] = []
+        missing_texts: list[str] = []
+
+        for cid, summary in entries:
+            cache_key = f"{cid}:{hashlib.sha1(summary.encode('utf-8')).hexdigest()}"
+            cached = cache.get(cache_key)
+            if isinstance(cached, list):
+                try:
+                    summary_embeddings_by_id[cid] = [float(v) for v in cached]
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            missing_ids.append(cid)
+            missing_texts.append(summary)
+
+        client = embed_client or self._get_llm_client()
+        if missing_texts:
+            new_embeddings = await client.embed(missing_texts)
+            for cid, summary, emb in zip(missing_ids, missing_texts, new_embeddings, strict=True):
+                emb_list = [float(v) for v in emb]
+                summary_embeddings_by_id[cid] = emb_list
+                cache_key = f"{cid}:{hashlib.sha1(summary.encode('utf-8')).hexdigest()}"
+                cache[cache_key] = emb_list
+            self._save_category_summary_embedding_cache(cache)
+
+        corpus = [(cid, summary_embeddings_by_id[cid]) for cid, _ in entries if cid in summary_embeddings_by_id]
+        hits = cosine_topk(query_vec, corpus, k=top_k)
         return hits, summary_lookup
+
+    def _category_summary_embedding_cache_path(self) -> Path | None:
+        try:
+            dsn = self.database_config.metadata_store.dsn
+        except Exception:
+            return None
+        if not isinstance(dsn, str) or not dsn.startswith("sqlite:///"):
+            return None
+        raw = dsn[len("sqlite:///") :]
+        if not raw:
+            return None
+        db_path = Path(raw)
+        if not db_path.is_absolute():
+            db_path = Path(os.getcwd()) / db_path
+        return db_path.parent / ".memu_category_summary_embed_cache.json"
+
+    def _load_category_summary_embedding_cache(self) -> dict[str, list[float]]:
+        cache_path = self._category_summary_embedding_cache_path()
+        if cache_path is None:
+            return {}
+        try:
+            cached_path = getattr(self, "_category_summary_embedding_cache_path_cached", None)
+            if cached_path != cache_path:
+                setattr(self, "_category_summary_embedding_cache_path_cached", cache_path)
+                setattr(self, "_category_summary_embedding_cache_data", None)
+            memory_cache = getattr(self, "_category_summary_embedding_cache_data", None)
+            if isinstance(memory_cache, dict):
+                return memory_cache
+            if not cache_path.exists():
+                cache_data: dict[str, list[float]] = {}
+            else:
+                loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+                cache_data = loaded if isinstance(loaded, dict) else {}
+            setattr(self, "_category_summary_embedding_cache_data", cache_data)
+            return cache_data
+        except Exception:
+            return {}
+
+    def _save_category_summary_embedding_cache(self, cache: dict[str, list[float]]) -> None:
+        cache_path = self._category_summary_embedding_cache_path()
+        if cache_path is None:
+            return
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = cache_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            tmp_path.replace(cache_path)
+            setattr(self, "_category_summary_embedding_cache_data", cache)
+        except Exception:
+            logger.debug("Failed to persist category summary embedding cache", exc_info=True)
 
     async def _decide_if_retrieval_needed(
         self,

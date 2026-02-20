@@ -38,6 +38,9 @@ class SQLiteRepoBase:
         self._sqla_models = sqla_models
         self._sessions = sessions
         self._scope_fields = scope_fields
+        # Cache parsed JSON embeddings to avoid repeated json.loads/float casting hot path.
+        self._embedding_json_cache: dict[str, tuple[float, ...] | None] = {}
+        self._embedding_json_cache_max = 4096
 
     def _scope_kwargs_from(self, obj: Any) -> dict[str, Any]:
         """Extract scope fields from an object."""
@@ -49,8 +52,17 @@ class SQLiteRepoBase:
             return None
         # Handle JSON string format (SQLite stores embeddings as JSON)
         if isinstance(embedding, str):
+            cached = self._embedding_json_cache.get(embedding)
+            if cached is not None:
+                return list(cached)
             try:
-                return [float(x) for x in json.loads(embedding)]
+                parsed = tuple(float(x) for x in json.loads(embedding))
+                if len(self._embedding_json_cache) >= self._embedding_json_cache_max:
+                    oldest_key = next(iter(self._embedding_json_cache), None)
+                    if oldest_key is not None:
+                        self._embedding_json_cache.pop(oldest_key, None)
+                self._embedding_json_cache[embedding] = parsed
+                return list(parsed)
             except (json.JSONDecodeError, TypeError):
                 logger.debug("Could not parse embedding JSON: %s", embedding)
                 return None
