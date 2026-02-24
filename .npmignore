@@ -1,0 +1,14 @@
+**/__pycache__/
+**/*.pyc
+
+python/.venv/
+python/data/
+python/README.md
+python/src/lib.rs
+python/pyproject.toml.bak
+
+AUDIT_REPORT.md
+RELEASE_*.md
+update_from_upstream.sh
+tsconfig.json
+openclaw.d.ts

@@ -25,22 +25,25 @@
 
 > 核心优势：MemU 的记忆提取算法能将非结构化对话转化为高质量的结构化数据。详见 [MemU 官方文档](https://github.com/NevaMind-AI/MemU)。
 
-## 🤖 让小爪子自己给你装
+## 安装（官方 OpenClaw 流程）
 
-粘贴下面这一段并告诉openclaw来安装本插件：
+### 前置条件
 
-```text
-Install and configure oh-my-opencode by following the instructions here: https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README.md
-```
+- `python >= 3.11`
+- `uv` 在 `PATH` 中可用（插件内部使用 `uv run --project python ...`）
 
-## 手动安装
+### 1. 安装插件
 
-### 1. 下载插件
+已发包版本：
 
 ```bash
-mkdir -p ~/.openclaw/extensions
-cd ~/.openclaw/extensions
-git clone https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git memu-engine
+openclaw plugins install memu-engine
+```
+
+本地开发联动（不拷贝）：
+
+```bash
+openclaw plugins install -l /你的/memu-engine/绝对路径
 ```
 
 ### 2. 配置 OpenClaw

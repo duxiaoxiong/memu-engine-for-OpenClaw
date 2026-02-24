@@ -1,10 +1,37 @@
 {
   "name": "memu-engine",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Atomic memory engine for OpenClaw powered by MemU. Features immutable parts for zero redundant token cost.",
-  "main": "index.js",
+  "main": "index.ts",
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "python/pyproject.toml",
+    "python/uv.lock",
+    "python/watch_sync.py",
+    "python/auto_sync.py",
+    "python/convert_sessions.py",
+    "python/docs_ingest.py",
+    "python/scripts/search.py",
+    "python/scripts/get.py",
+    "python/scripts/flush.py",
+    "python/src/memu/**/*.py",
+    "python/src/memu/**/*.pyi",
+    "python/src/memu/**/*.so",
+    "README.md",
+    "README_ZH.md",
+    "MEMU_PARAMETERS.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"No tests yet\"",
+    "pack:check": "npm pack --dry-run"
   },
   "repository": {
     "type": "git",
@@ -23,6 +50,9 @@
     "url": "https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/issues"
   },
   "homepage": "https://github.com/duxiaoxiong/memu-engine-for-OpenClaw#readme",
+  "engines": {
+    "node": ">=18"
+  },
   "devDependencies": {
     "@types/node": "^25.2.2",
     "typescript": "^5.9.3"

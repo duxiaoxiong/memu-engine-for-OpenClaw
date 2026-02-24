@@ -25,29 +25,32 @@ It listens to OpenClaw's session logs and workspace documents, incrementally ext
 
 > Core Advantage: MemU's memory extraction algorithm transforms unstructured conversations into high-quality structured data. See the [MemU official documentation](https://github.com/NevaMind-AI/MemU) for details.
 
-## 🤖 Let OpenClaw Install Itself
+## Install (Official OpenClaw Flow)
 
-Paste the following block and tell OpenClaw to install this plugin:
+### Prerequisites
 
-```text
-Install and configure memu-engine by following the instructions here: https://github.com/duxiaoxiong/memu-engine-for-OpenClaw/blob/main/README.md
-```
+- `python >= 3.11`
+- `uv` available in `PATH` (the plugin invokes `uv run --project python ...`)
 
-## Manual Installation
+### 1. Install plugin
 
-### 1. Download Plugin
+Published package:
 
 ```bash
-mkdir -p ~/.openclaw/extensions
-cd ~/.openclaw/extensions
-git clone https://github.com/duxiaoxiong/memu-engine-for-OpenClaw.git memu-engine
+openclaw plugins install memu-engine
+```
+
+Local dev link:
+
+```bash
+openclaw plugins install -l /abs/path/to/memu-engine
 ```
 
 ### 2. Configure OpenClaw
 
-Edit `~/.openclaw/openclaw.json` and configure this plugin under the `plugins` section.
+Edit `~/.openclaw/openclaw.json` under `plugins`.
 
-### 3. Restart and Activate
+### 3. Restart and activate
 
 ```bash
 openclaw gateway restart
