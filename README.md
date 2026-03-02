@@ -124,6 +124,7 @@ Configures the model used for generating text vectors, which directly determines
 Configures the LLM used for reading conversation logs and extracting memory items.
 *   **Recommended**: Since it needs to process large amounts of chunked data, use **fast and cheap** models like `gpt-4o-mini` or `gemini-1.5-flash`.
 *   **Note**: This model is primarily for classification and summarization; speed is more important than reasoning capability.
+*   **Tip**: Prefer non-reasoning models that return strict XML-only output (no thinking text or Markdown).
 
 ### 3. `language` (Output Language)
 Specifies the language for generated memory summaries.
