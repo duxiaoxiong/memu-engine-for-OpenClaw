@@ -37,7 +37,7 @@ It listens to OpenClaw's session logs and workspace documents, incrementally ext
 Published package:
 
 ```bash
-openclaw plugins install memu-engine-for-openclaw
+openclaw plugins install memu-engine
 ```
 
 Local dev link:

@@ -37,7 +37,7 @@
 已发包版本：
 
 ```bash
-openclaw plugins install memu-engine-for-openclaw
+openclaw plugins install memu-engine
 ```
 
 本地开发联动（不拷贝）：
