@@ -52,6 +52,8 @@ tests/fixtures/v0_2_6_data.backup.*/
 
 # Local migration validation test (not for upstream upload)
 python/tests/unit/test_storage_layout_migrate_script.py
+python/tests/test_migration_hybrid.py
+python/tests/fixtures/
 
 # Temporary local inputs / benchmarks
 python/tmp_*
