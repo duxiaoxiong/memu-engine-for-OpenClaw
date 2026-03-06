@@ -30,6 +30,7 @@ from memu.migration import (
 
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+pytestmark = pytest.mark.migration
 
 
 def _load_sql_fixture(fixture_name: str, target_db: Path) -> None:

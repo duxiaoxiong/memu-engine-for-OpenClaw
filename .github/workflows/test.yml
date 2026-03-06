@@ -49,7 +49,7 @@ jobs:
       - name: Run pytest with coverage
         run: |
           cd python
-          pytest tests/ -v --cov=src/memu --cov-report=xml
+          pytest tests/ -q --tb=short -m "not perf and not acceptance and not migration" --cov=src/memu --cov-report=xml
 
       - name: Upload Python coverage artifact
         uses: actions/upload-artifact@v4

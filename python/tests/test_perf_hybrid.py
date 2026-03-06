@@ -6,9 +6,14 @@ import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import pytest
+
 from memu.app.settings import DatabaseConfig, MemUConfig
 from memu.database.hybrid_factory import HybridDatabaseManager
 from tests.shared_user_model import SharedUserModel
+
+
+pytestmark = pytest.mark.perf
 
 
 class _DeterministicEmbedClient:

@@ -13,9 +13,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 # Test configuration
 TEST_DB_PATH = None
 TEST_SESSIONS_DIR = None
+pytestmark = pytest.mark.acceptance
 
 
 def setup_test_environment() -> str:
