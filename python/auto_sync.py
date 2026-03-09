@@ -105,6 +105,24 @@ def _read_prev_main_session_id() -> str | None:
     return sid
 
 
+def _read_prev_session_ids() -> list[str]:
+    raw = os.getenv("MEMU_PREV_SESSION_IDS")
+    if raw:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in raw.split(","):
+            sid = item.strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            out.append(sid)
+        if out:
+            return out
+
+    prev_main = _read_prev_main_session_id()
+    return [prev_main] if prev_main else []
+
+
 def _try_acquire_lock(lock_path: str):
     """Best-effort non-blocking lock using O_EXCL.
 
@@ -452,9 +470,9 @@ def _write_last_sync(ts: float, agent_name: str | None = None) -> None:
 
 
 def _main_session_file_exists(agent_name: str) -> bool:
-    """Best-effort check: does OpenClaw main session jsonl exist right now?
+    """Best-effort check: does any tracked session jsonl exist right now?
 
-    IMPORTANT: If the main session file is temporarily missing (startup race / rotation),
+    IMPORTANT: If tracked session files are temporarily missing (startup race / rotation),
     we must NOT advance last_sync_ts, otherwise we can permanently skip older mtimes.
     """
     sessions_dir = os.getenv("OPENCLAW_SESSIONS_DIR")
@@ -488,30 +506,30 @@ async def sync_once(user_id: str = "default") -> None:
         pending_paths = _load_pending_ingest(current_agent)
 
         # 1) Convert updated OpenClaw session jsonl -> memU JSON resources
-        # NOTE: convert() may return [] if the main session file is temporarily missing.
+        # NOTE: convert() may return [] if tracked session files are temporarily missing.
         # In that case, do NOT advance last_sync_ts; otherwise we can skip content.
         converted_paths = convert(since_ts=last_sync, agent_name=current_agent)
 
-        # Optional salvage path: when watcher detects a /new switch,
-        # it passes the previous main session id. Force-finalize any staged tail
-        # from that previous session so reset archives do not strand messages.
-        prev_main_session_id = _read_prev_main_session_id()
-        if prev_main_session_id:
+        # Optional salvage path: when watcher detects removed tracked sessions
+        # (for example /new switches or transcript rotation), force-finalize any
+        # staged tails so archived sessions do not strand messages.
+        prev_session_ids = _read_prev_session_ids()
+        for prev_session_id in prev_session_ids:
             try:
                 salvage_paths = convert(
                     since_ts=last_sync,
-                    session_id=prev_main_session_id,
+                    session_id=prev_session_id,
                     force_flush=True,
                     agent_name=current_agent,
                 )
                 if salvage_paths:
                     _log(
-                        f"salvage previous main session ({prev_main_session_id}): {len(salvage_paths)} part(s)"
+                        f"salvage previous session ({prev_session_id}): {len(salvage_paths)} part(s)"
                     )
                     converted_paths.extend(salvage_paths)
             except Exception as e:
                 _log(
-                    f"salvage failed for previous main session ({prev_main_session_id}): {type(e).__name__}: {e}"
+                    f"salvage failed for previous session ({prev_session_id}): {type(e).__name__}: {e}"
                 )
 
         if (
@@ -520,7 +538,7 @@ async def sync_once(user_id: str = "default") -> None:
             and not _main_session_file_exists(current_agent)
         ):
             _log(
-                "main session file missing/unavailable; skip updating sync cursor to avoid data loss"
+                "tracked session files missing/unavailable; skip updating sync cursor to avoid data loss"
             )
             return
 

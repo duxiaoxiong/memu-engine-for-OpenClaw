@@ -4,7 +4,7 @@ OpenClaw Session Converter
 Converts OpenClaw session JSONL files to memU conversation format.
 
 Key behaviors:
-1. Only process the MAIN session (identified via sessions.json["agent:main:main"])
+1. Process all tracked sessions for the current agent from sessions indexes
 2. Skip all .deleted files (they are sub-agent archives, not user conversations)
 3. Skip all other UUID sessions (they are active sub-agents)
 4. Filter out system-injected messages that look like user messages
@@ -124,6 +124,17 @@ def _get_language_prefix() -> str | None:
 
 
 def discover_session_files(data_root: str | Path, agents: list[str]) -> dict[str, str]:
+    discovered = discover_all_session_files(data_root, agents)
+    return {
+        agent_name: paths[0]
+        for agent_name, paths in discovered.items()
+        if isinstance(paths, list) and paths
+    }
+
+
+def discover_all_session_files(
+    data_root: str | Path, agents: list[str]
+) -> dict[str, list[str]]:
     root_input = Path(data_root).expanduser()
     sessions_roots: list[Path] = []
     if root_input.name == "sessions":
@@ -143,6 +154,16 @@ def discover_session_files(data_root: str | Path, agents: list[str]) -> dict[str
     enabled_agents = list(dict.fromkeys(enabled_agents))
     if not enabled_agents:
         return {}
+
+    def _is_agent_scoped_sessions_root(root: Path, agent_name: str) -> bool:
+        try:
+            return (
+                root.name == "sessions"
+                and root.parent.name == agent_name
+                and root.parent.parent.name == "agents"
+            )
+        except Exception:
+            return False
 
     def _load_sessions_json(path: Path) -> dict[str, Any] | None:
         if not path.exists():
@@ -165,18 +186,34 @@ def discover_session_files(data_root: str | Path, agents: list[str]) -> dict[str
             return None
         return payload
 
-    def _extract_session_id_for_agent(payload: dict[str, Any], agent_name: str) -> str | None:
+    def _extract_session_ids_for_agent(
+        payload: dict[str, Any],
+        agent_name: str,
+        *,
+        allow_unscoped_keys: bool = False,
+    ) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
         for key, value in payload.items():
-            if not isinstance(key, str) or not key.startswith(f"agent:{agent_name}:"):
+            if not isinstance(key, str):
+                continue
+            matches_agent_scope = key.startswith(f"agent:{agent_name}:")
+            matches_unscoped = allow_unscoped_keys and not key.startswith("agent:")
+            if not (matches_agent_scope or matches_unscoped):
                 continue
             if not isinstance(value, dict):
                 continue
             session_id = value.get("sessionId")
-            if isinstance(session_id, str) and session_id.strip():
-                return session_id.strip()
-        return None
+            if not isinstance(session_id, str):
+                continue
+            resolved = session_id.strip()
+            if not resolved or resolved in seen:
+                continue
+            seen.add(resolved)
+            out.append(resolved)
+        return out
 
-    out: dict[str, str] = {}
+    out: dict[str, list[str]] = {}
     legacy_cache: dict[str, dict[str, Any] | None] = {}
 
     for agent_name in enabled_agents:
@@ -188,27 +225,46 @@ def discover_session_files(data_root: str | Path, agents: list[str]) -> dict[str
             if payload is None:
                 continue
 
-            session_id = _extract_session_id_for_agent(payload, agent_name)
-            if not session_id:
+            session_ids = _extract_session_ids_for_agent(
+                payload,
+                agent_name,
+                allow_unscoped_keys=True,
+            )
+            if not session_ids:
                 logger.warning(
                     f"no session id found for agent '{agent_name}' in {per_agent_index}"
                 )
                 continue
 
-            transcript_candidates = [
-                sessions_root / agent_name / f"{session_id}.jsonl",
-                sessions_root / f"{session_id}.jsonl",
-            ]
-            for candidate in transcript_candidates:
-                if candidate.exists():
-                    out[agent_name] = str(candidate)
-                    resolved = True
-                    break
+            resolved_paths: list[str] = []
+            seen_paths: set[str] = set()
+            missing_session_ids: list[str] = []
+            for session_id in session_ids:
+                transcript_candidates = [
+                    sessions_root / agent_name / f"{session_id}.jsonl",
+                    sessions_root / f"{session_id}.jsonl",
+                ]
+                found_path = None
+                for candidate in transcript_candidates:
+                    candidate_key = str(candidate)
+                    if candidate.exists():
+                        found_path = candidate_key
+                        break
+                if found_path is None:
+                    missing_session_ids.append(session_id)
+                    continue
+                if found_path in seen_paths:
+                    continue
+                seen_paths.add(found_path)
+                resolved_paths.append(found_path)
 
-            if not resolved:
+            if resolved_paths:
+                out[agent_name] = resolved_paths
+                resolved = True
+            elif missing_session_ids:
                 logger.warning(
                     f"session file missing for agent '{agent_name}': "
-                    f"{transcript_candidates[0]}"
+                    f"{per_agent_index} (session_ids={missing_session_ids})"
                 )
             if resolved:
                 break
@@ -225,24 +281,43 @@ def discover_session_files(data_root: str | Path, agents: list[str]) -> dict[str
             if payload is None:
                 continue
 
-            session_id = _extract_session_id_for_agent(payload, agent_name)
-            if not session_id:
+            session_ids = _extract_session_ids_for_agent(
+                payload,
+                agent_name,
+                allow_unscoped_keys=_is_agent_scoped_sessions_root(sessions_root, agent_name),
+            )
+            if not session_ids:
                 continue
 
-            transcript_candidates = [
-                sessions_root / f"{session_id}.jsonl",
-                sessions_root / agent_name / f"{session_id}.jsonl",
-            ]
-            for candidate in transcript_candidates:
-                if candidate.exists():
-                    out[agent_name] = str(candidate)
-                    resolved = True
-                    break
+            resolved_paths = []
+            seen_paths: set[str] = set()
+            missing_session_ids: list[str] = []
+            for session_id in session_ids:
+                transcript_candidates = [
+                    sessions_root / f"{session_id}.jsonl",
+                    sessions_root / agent_name / f"{session_id}.jsonl",
+                ]
+                found_path = None
+                for candidate in transcript_candidates:
+                    candidate_key = str(candidate)
+                    if candidate.exists():
+                        found_path = candidate_key
+                        break
+                if found_path is None:
+                    missing_session_ids.append(session_id)
+                    continue
+                if found_path in seen_paths:
+                    continue
+                seen_paths.add(found_path)
+                resolved_paths.append(found_path)
 
-            if not resolved:
+            if resolved_paths:
+                out[agent_name] = resolved_paths
+                resolved = True
+            elif missing_session_ids:
                 logger.warning(
                     f"legacy session file missing for agent '{agent_name}': "
-                    f"{transcript_candidates[0]}"
+                    f"{legacy_index} (session_ids={missing_session_ids})"
                 )
             if resolved:
                 break
@@ -261,15 +336,19 @@ def _get_agent_session_ids(sessions_dir: str, agent_name: str) -> list[str]:
     Returns:
         session ID 列表
     """
-    discovered = discover_session_files(sessions_dir, [agent_name])
-    session_file = discovered.get(agent_name)
-    if not session_file:
-        return []
-
-    session_id = _extract_session_id(os.path.basename(session_file))
-    if session_id:
-        return [session_id]
-    return [Path(session_file).stem]
+    discovered = discover_all_session_files(sessions_dir, [agent_name])
+    session_files = discovered.get(agent_name, [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for session_file in session_files:
+        session_id = _extract_session_id(os.path.basename(session_file))
+        if not session_id:
+            session_id = Path(session_file).stem
+        if not session_id or session_id in seen:
+            continue
+        seen.add(session_id)
+        out.append(session_id)
+    return out
 
 
 def _get_main_session_id(agent_name: str = "main") -> str | None:
@@ -277,20 +356,31 @@ def _get_main_session_id(agent_name: str = "main") -> str | None:
     return session_ids[0] if session_ids else None
 
 
-def _resolve_session_file(session_id: str) -> str | None:
+def _resolve_session_file(session_id: str, agent_name: str | None = None) -> str | None:
     """Resolve transcript file for a session id.
 
     Prefer active `<id>.jsonl`; fall back to latest reset/archive transcript
     generated by OpenClaw session reset flow.
     """
-    primary = os.path.join(sessions_dir, f"{session_id}.jsonl")
-    if os.path.exists(primary):
-        return primary
+    primary_candidates = []
+    if agent_name:
+        primary_candidates.append(os.path.join(sessions_dir, agent_name, f"{session_id}.jsonl"))
+    primary_candidates.append(os.path.join(sessions_dir, f"{session_id}.jsonl"))
+    for primary in primary_candidates:
+        if os.path.exists(primary):
+            return primary
 
     # OpenClaw reset archives old transcript as:
     #   <id>.jsonl.reset.<timestamp>
     # Keep a conservative fallback set for historical variants.
     candidates = []
+    if agent_name:
+        candidates.extend(
+            glob.glob(os.path.join(sessions_dir, agent_name, f"{session_id}.jsonl.reset.*"))
+        )
+        candidates.extend(
+            glob.glob(os.path.join(sessions_dir, agent_name, f"{session_id}.jsonl.bak*"))
+        )
     candidates.extend(glob.glob(os.path.join(sessions_dir, f"{session_id}.jsonl.reset.*")))
     candidates.extend(glob.glob(os.path.join(sessions_dir, f"{session_id}.jsonl.bak*")))
     if not candidates:
@@ -670,7 +760,7 @@ def convert(
 ) -> list[str]:
     """Convert one OpenClaw session transcript to memU conversation parts.
 
-    - default: current main session from sessions.json
+    - default: current tracked sessions from sessions.json
     - optional: explicit session_id (used to salvage reset/archived sessions)
     """
     try:
@@ -692,6 +782,39 @@ def convert(
     max_messages = int(os.getenv("MEMU_MAX_MESSAGES_PER_SESSION", "60") or "60")
 
     resolved_agent = (agent_name or os.getenv("MEMU_AGENT_NAME") or "main").strip() or "main"
+    if session_id is None:
+        discovered = discover_all_session_files(sessions_dir, [resolved_agent])
+        session_files = discovered.get(resolved_agent, [])
+        if not session_files:
+            print(
+                f"[convert_sessions] No session found in sessions indexes for agent: {resolved_agent}",
+                file=__import__("sys").stderr,
+            )
+            return []
+
+        converted_all: list[str] = []
+        seen_paths: set[str] = set()
+        for session_file in session_files:
+            target_session_id = (
+                _extract_session_id(os.path.basename(session_file))
+                or Path(session_file).stem
+            )
+            if not target_session_id:
+                continue
+            converted_paths = convert(
+                since_ts=since_ts,
+                session_id=target_session_id,
+                agent_name=resolved_agent,
+                memory_root=resolved_memory_root,
+                force_flush=force_flush,
+            )
+            for path in converted_paths:
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                converted_all.append(path)
+        return converted_all
+
     out_dir = _conversation_dir(resolved_agent)
     legacy_out_dir = _legacy_conversation_dir()
     state_path = _state_path(resolved_agent)
@@ -699,26 +822,13 @@ def convert(
     os.makedirs(out_dir, exist_ok=True)
     if session_id:
         target_session_id = session_id
-        session_file = _resolve_session_file(target_session_id)
+        session_file = _resolve_session_file(target_session_id, resolved_agent)
         if not session_file:
             print(
                 f"[convert_sessions] Session file not found for: {target_session_id}",
                 file=__import__("sys").stderr,
             )
             return []
-    else:
-        discovered = discover_session_files(sessions_dir, [resolved_agent])
-        session_file = discovered.get(resolved_agent)
-        if not session_file:
-            print(
-                f"[convert_sessions] No session found in sessions indexes for agent: {resolved_agent}",
-                file=__import__("sys").stderr,
-            )
-            return []
-        target_session_id = (
-            _extract_session_id(os.path.basename(session_file))
-            or Path(session_file).stem
-        )
 
     state = _load_state(state_path=state_path, legacy_state_path=legacy_state_path)
     sessions_state: dict[str, Any] = state.setdefault("sessions", {})
