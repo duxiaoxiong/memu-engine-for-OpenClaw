@@ -51,10 +51,12 @@ class SQLiteResourceModel(SQLiteBaseModelMixin, SQLModel):
     url: str = Field(sa_column_kwargs={"nullable": False})
     modality: str = Field(sa_column_kwargs={"nullable": False})
     local_path: str = Field(sa_column_kwargs={"nullable": False})
-    caption: str | None = Field(default=None, sa_column_kwargs={"type_": Text, "nullable": True})
+    caption: str | None = Field(
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
+    )
     # Store embedding as JSON string since SQLite doesn't have native vector type
     embedding_json: str | None = Field(
-        default=None, sa_column_kwargs={"type_": Text, "nullable": True}
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
     )
 
     @property
@@ -81,16 +83,20 @@ class SQLiteMemoryItemModel(SQLiteBaseModelMixin, SQLModel):
     """SQLite memory item model."""
 
     resource_id: str | None = Field(sa_column_kwargs={"nullable": True})
-    memory_type: MemoryType = Field(sa_column_kwargs={"nullable": False})
-    summary: str = Field(sa_column_kwargs={"type_": Text, "nullable": False})
+    memory_type: MemoryType = Field(
+        sa_type=String, sa_column_kwargs={"nullable": False}
+    )
+    summary: str = Field(sa_type=Text, sa_column_kwargs={"nullable": False})
     # Store embedding as JSON string since SQLite doesn't have native vector type
     embedding_json: str | None = Field(
-        default=None, sa_column_kwargs={"type_": Text, "nullable": True}
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
     )
     happened_at: datetime | None = Field(
-        default=None, sa_column_kwargs={"type_": DateTime, "nullable": True}
+        default=None, sa_type=DateTime, sa_column_kwargs={"nullable": True}
     )
-    extra: dict[str, Any] = Field(default={}, sa_column_kwargs={"type_": JSON, "nullable": True})
+    extra: dict[str, Any] = Field(
+        default={}, sa_type=JSON, sa_column_kwargs={"nullable": True}
+    )
 
     @property
     def embedding(self) -> list[float] | None:
@@ -116,12 +122,14 @@ class SQLiteMemoryCategoryModel(SQLiteBaseModelMixin, SQLModel):
     """SQLite memory category model."""
 
     name: str = Field(sa_column_kwargs={"nullable": False, "index": True})
-    description: str = Field(sa_column_kwargs={"type_": Text, "nullable": False})
+    description: str = Field(sa_type=Text, sa_column_kwargs={"nullable": False})
     # Store embedding as JSON string since SQLite doesn't have native vector type
     embedding_json: str | None = Field(
-        default=None, sa_column_kwargs={"type_": Text, "nullable": True}
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
     )
-    summary: str | None = Field(default=None, sa_column_kwargs={"type_": Text, "nullable": True})
+    summary: str | None = Field(
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
+    )
 
     @property
     def embedding(self) -> list[float] | None:
@@ -186,7 +194,7 @@ def _merge_models(
             (core_model,),
             base_attrs,
         )
-    
+
     overlap = set(user_model.model_fields) & set(core_model.model_fields)
     if overlap:
         msg = f"Scope fields conflict with core model fields: {sorted(overlap)}"

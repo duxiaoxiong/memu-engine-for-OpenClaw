@@ -13,11 +13,17 @@ except ImportError as exc:
     raise ImportError(msg) from exc
 
 from pydantic import BaseModel
-from sqlalchemy import ForeignKey, MetaData, String, Text
+from sqlalchemy import MetaData, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import DateTime, Field, Index, SQLModel, func
 
-from memu.database.models import CategoryItem, MemoryCategory, MemoryItem, MemoryType, Resource
+from memu.database.models import (
+    CategoryItem,
+    MemoryCategory,
+    MemoryItem,
+    MemoryType,
+    Resource,
+)
 
 
 class TZDateTime(DateTime):
@@ -47,31 +53,51 @@ class ResourceModel(BaseModelMixin, Resource):
     url: str = Field(sa_column_kwargs={"nullable": False})
     modality: str = Field(sa_column_kwargs={"nullable": False})
     local_path: str = Field(sa_column_kwargs={"nullable": False})
-    caption: str | None = Field(default=None, sa_column_kwargs={"type_": Text, "nullable": True})
-    embedding: list[float] | None = Field(default=None, sa_column_kwargs={"type_": Vector(), "nullable": True})
+    caption: str | None = Field(
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
+    )
+    embedding: list[float] | None = Field(
+        default=None, sa_type=Vector(), sa_column_kwargs={"nullable": True}
+    )
 
 
 class MemoryItemModel(BaseModelMixin, MemoryItem):
-    resource_id: str | None = Field(sa_column_kwargs={"type_": ForeignKey("resources.id", ondelete="CASCADE"), "nullable": True})
-    memory_type: MemoryType = Field(sa_column_kwargs={"nullable": False})
-    summary: str = Field(sa_column_kwargs={"type_": Text, "nullable": False})
-    embedding: list[float] | None = Field(default=None, sa_column_kwargs={"type_": Vector(), "nullable": True})
-    happened_at: datetime | None = Field(default=None, sa_column_kwargs={"type_": DateTime, "nullable": True})
-    extra: dict[str, Any] = Field(default={}, sa_column_kwargs={"type_": JSONB, "nullable": True})
+    resource_id: str | None = Field(
+        default=None, foreign_key="resources.id", ondelete="CASCADE"
+    )
+    memory_type: MemoryType = Field(
+        sa_type=String, sa_column_kwargs={"nullable": False}
+    )
+    summary: str = Field(sa_type=Text, sa_column_kwargs={"nullable": False})
+    embedding: list[float] | None = Field(
+        default=None, sa_type=Vector(), sa_column_kwargs={"nullable": True}
+    )
+    happened_at: datetime | None = Field(
+        default=None, sa_type=DateTime, sa_column_kwargs={"nullable": True}
+    )
+    extra: dict[str, Any] = Field(
+        default={}, sa_type=JSONB, sa_column_kwargs={"nullable": True}
+    )
 
 
 class MemoryCategoryModel(BaseModelMixin, MemoryCategory):
     name: str = Field(sa_column_kwargs={"nullable": False, "index": True})
-    description: str = Field(sa_column_kwargs={"type_": Text, "nullable": False})
-    embedding: list[float] | None = Field(default=None, sa_column_kwargs={"type_": Vector(), "nullable": True})
-    summary: str | None = Field(default=None, sa_column_kwargs={"type_": Text, "nullable": True})
+    description: str = Field(sa_type=Text, sa_column_kwargs={"nullable": False})
+    embedding: list[float] | None = Field(
+        default=None, sa_type=Vector(), sa_column_kwargs={"nullable": True}
+    )
+    summary: str | None = Field(
+        default=None, sa_type=Text, sa_column_kwargs={"nullable": True}
+    )
 
 
 class CategoryItemModel(BaseModelMixin, CategoryItem):
-    item_id: str = Field(sa_column_kwargs={"type_": ForeignKey("memory_items.id", ondelete="CASCADE"), "nullable": False})
-    category_id: str = Field(sa_column_kwargs={"type_": ForeignKey("memory_categories.id", ondelete="CASCADE"), "nullable": False})
+    item_id: str = Field(foreign_key="memory_items.id", ondelete="CASCADE")
+    category_id: str = Field(foreign_key="memory_categories.id", ondelete="CASCADE")
 
-    __table_args__ = (Index("idx_category_items_unique", "item_id", "category_id", unique=True),)
+    __table_args__ = (
+        Index("idx_category_items_unique", "item_id", "category_id", unique=True),
+    )
 
 
 def _normalize_table_args(table_args: Any) -> tuple[list[Any], dict[str, Any]]:
@@ -123,7 +149,9 @@ def build_table_model(
         raise TypeError(msg)
 
     scope_fields = list(user_model.model_fields.keys())
-    base_table_args, table_kwargs = _normalize_table_args(getattr(core_model, "__table_args__", None))
+    base_table_args, table_kwargs = _normalize_table_args(
+        getattr(core_model, "__table_args__", None)
+    )
     table_args = list(base_table_args)
     if extra_table_args:
         table_args.extend(extra_table_args)
@@ -131,11 +159,18 @@ def build_table_model(
         table_args.append(Index(f"ix_{tablename}__scope", *scope_fields))
     if unique_with_scope:
         unique_cols = [*unique_with_scope, *scope_fields]
-        table_args.append(Index(f"ix_{tablename}__unique_scoped", *unique_cols, unique=True))
-    if tablename == "memory_items" and {"agent_id", "user_id"}.issubset(set(scope_fields)):
+        table_args.append(
+            Index(f"ix_{tablename}__unique_scoped", *unique_cols, unique=True)
+        )
+    if tablename == "memory_items" and {"agent_id", "user_id"}.issubset(
+        set(scope_fields)
+    ):
         table_args.append(Index("idx_agent_scope", "agent_id", "user_id"))
 
-    base_attrs: dict[str, Any] = {"__module__": core_model.__module__, "__tablename__": tablename}
+    base_attrs: dict[str, Any] = {
+        "__module__": core_model.__module__,
+        "__tablename__": tablename,
+    }
     if metadata is not None:
         base_attrs["metadata"] = metadata
     if table_args or table_kwargs:
@@ -144,7 +179,9 @@ def build_table_model(
         else:
             base_attrs["__table_args__"] = tuple(table_args)
 
-    base = _merge_models(user_model, core_model, name_suffix="Base", base_attrs=base_attrs)
+    base = _merge_models(
+        user_model, core_model, name_suffix="Base", base_attrs=base_attrs
+    )
 
     # Use type() instead of create_model to properly preserve SQLModel table behavior
     table_attrs: dict[str, Any] = {"__module__": core_model.__module__}
@@ -164,10 +201,17 @@ def build_scoped_models(
     """
     resource_model = build_table_model(user_model, ResourceModel, tablename="resources")
     memory_category_model = build_table_model(
-        user_model, MemoryCategoryModel, tablename="memory_categories", unique_with_scope=["name"]
+        user_model,
+        MemoryCategoryModel,
+        tablename="memory_categories",
+        unique_with_scope=["name"],
     )
-    memory_item_model = build_table_model(user_model, MemoryItemModel, tablename="memory_items")
-    category_item_model = build_table_model(user_model, CategoryItemModel, tablename="category_items")
+    memory_item_model = build_table_model(
+        user_model, MemoryItemModel, tablename="memory_items"
+    )
+    category_item_model = build_table_model(
+        user_model, CategoryItemModel, tablename="category_items"
+    )
     return resource_model, memory_category_model, memory_item_model, category_item_model
 
 
