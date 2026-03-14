@@ -157,12 +157,6 @@ class SQLiteCategoryItemModel(SQLiteBaseModelMixin, SQLModel):
     item_id: str = Field(sa_column_kwargs={"nullable": False})
     category_id: str = Field(sa_column_kwargs={"nullable": False})
 
-    __table_args__ = (
-        Index(
-            "idx_sqlite_category_items_unique", "item_id", "category_id", unique=True
-        ),
-    )
-
 
 def _normalize_table_args(table_args: Any) -> tuple[list[Any], dict[str, Any]]:
     """Normalize SQLAlchemy table args to a consistent format."""

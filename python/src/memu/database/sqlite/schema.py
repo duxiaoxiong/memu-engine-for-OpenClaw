@@ -7,6 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy import MetaData
+from sqlmodel import Index
 from sqlmodel import SQLModel
 
 from memu.database.sqlite.models import (
@@ -74,6 +75,14 @@ def get_sqlite_sqlalchemy_models(
         SQLiteCategoryItemModel,
         tablename="memu_category_items",
         metadata=metadata_obj,
+        extra_table_args=(
+            Index(
+                "idx_sqlite_category_items_unique",
+                "item_id",
+                "category_id",
+                unique=True,
+            ),
+        ),
     )
 
     class SQLiteBase(SQLModel):
