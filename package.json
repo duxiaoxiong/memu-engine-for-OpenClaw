@@ -21,6 +21,7 @@
     "python/src/memu/**/*.py",
     "python/src/memu/**/*.pyi",
     "python/src/memu/**/*.so",
+    "examples/**/*.md",
     "README.md",
     "README_ZH.md",
     "MEMU_PARAMETERS.md",

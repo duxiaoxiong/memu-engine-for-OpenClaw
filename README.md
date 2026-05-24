@@ -342,6 +342,41 @@ Configures which additional Markdown documents to ingest besides session logs.
     *   Supports directory paths (recursively scans all `*.md` files).
     *   **Limitation**: Currently restricted to Markdown format only.
 
+#### Optional TweetClaw source memory workflow
+
+[TweetClaw](https://github.com/Xquik-dev/tweetclaw) is an OpenClaw plugin for
+X/Twitter automation tasks such as search tweets, search tweet replies, user lookup,
+follower export, media download, monitor tweets, and approval-gated write actions.
+
+Use TweetClaw for read-only public X/Twitter research, then save reviewed findings as
+Markdown under a directory that memu-engine ingests into the shared document store. This
+keeps social source context available through `memory_search` without mixing it into a
+single agent's private chat history.
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+```jsonc
+"ingest": {
+  "extraPaths": ["~/workspace/memory/x-twitter-signals"]
+},
+"agentSettings": {
+  "main": {
+    "memoryEnabled": true,
+    "searchEnabled": true,
+    "searchableStores": ["self", "shared"]
+  },
+  "research": {
+    "memoryEnabled": true,
+    "searchEnabled": true,
+    "searchableStores": ["self", "shared"]
+  }
+}
+```
+
+Full recipe: [TweetClaw X/Twitter source memory workflow](examples/tweetclaw-x-signal-memory.md).
+
 ### 6. `retrieval` (Search behavior)
 
 Controls how `memory_search` behaves.

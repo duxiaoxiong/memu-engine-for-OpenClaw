@@ -341,6 +341,40 @@ echo $OPENAI_API_KEY
     *   支持目录路径（递归扫描目录下的所有 `*.md` 文件）。
     *   **限制**：目前仅限制 Markdown 格式。
 
+#### 可选 TweetClaw 来源记忆工作流
+
+[TweetClaw](https://github.com/Xquik-dev/tweetclaw) 是一个 OpenClaw 插件，适合处理
+X/Twitter 自动化任务，例如搜索 tweets、搜索 tweet replies、用户查询、粉丝导出、
+媒体下载、监控 tweets，以及需要人工确认的写入动作。
+
+用 TweetClaw 做只读的公开 X/Twitter 研究后，将人工确认过的发现保存为 Markdown，
+再通过 memu-engine 的 `ingest.extraPaths` 写入共享文档库。这样可以让 `memory_search`
+检索到社交来源上下文，同时避免把这些外部来源混入某个代理的私有对话记忆。
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+```jsonc
+"ingest": {
+  "extraPaths": ["~/workspace/memory/x-twitter-signals"]
+},
+"agentSettings": {
+  "main": {
+    "memoryEnabled": true,
+    "searchEnabled": true,
+    "searchableStores": ["self", "shared"]
+  },
+  "research": {
+    "memoryEnabled": true,
+    "searchEnabled": true,
+    "searchableStores": ["self", "shared"]
+  }
+}
+```
+
+完整示例见：[TweetClaw X/Twitter 来源记忆工作流](examples/tweetclaw-x-signal-memory.md)。
+
 ### 6. `retrieval`（检索行为）
 
 用于控制 `memory_search` 的行为。
